@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import zlib from "node:zlib";
 import type { AppInfo, SaveRequest, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 import { verifyPassword } from "./config.ts";
 import { BadPath, NotFound, type NoteStore } from "./notes.ts";
@@ -56,6 +57,7 @@ export class HttpError extends Error {
 export function createApp(ctx: AppContext) {
   const clients = new Set<http.ServerResponse>();
   const verified = new Set<string>();
+  const gzipCache = new Map<string, { etag: string; gz: Buffer }>();
   const loopback = ctx.host === "127.0.0.1" || ctx.host === "localhost" || ctx.host === "::1";
 
   function broadcast(ev: ServerEvent): void {
@@ -195,7 +197,20 @@ export function createApp(ctx: AppContext) {
       res.end();
       return;
     }
+    let body = data;
+    const compressible = /\.(js|css|html|svg|json|map|webmanifest)$/.test(abs) && data.length > 1024;
+    const wantsGzip = /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
+    if (compressible && wantsGzip) {
+      let hit = gzipCache.get(abs);
+      if (!hit || hit.etag !== etag) {
+        hit = { etag, gz: zlib.gzipSync(data, { level: 9 }) };
+        gzipCache.set(abs, hit);
+      }
+      body = hit.gz;
+    }
     res.writeHead(200, {
+      ...(body !== data ? { "Content-Encoding": "gzip" } : {}),
+      Vary: "Accept-Encoding",
       "Content-Type": MIME[path.extname(abs)] ?? "application/octet-stream",
       "Cache-Control": "no-cache",
       ETag: etag,
@@ -209,7 +224,7 @@ export function createApp(ctx: AppContext) {
           }
         : {}),
     });
-    res.end(req.method === "HEAD" ? undefined : data);
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
   const server = http.createServer(async (req, res) => {

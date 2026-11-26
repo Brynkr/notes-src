@@ -29,6 +29,9 @@ export class NoteWatcher extends EventEmitter<WatcherEvents> {
     this.store = store;
     this.debounceMs = opts.debounceMs ?? 150;
     this.rescanMs = opts.rescanMs ?? 60_000;
+    // The store reports differences found by any scan, including ours.
+    store.on("changed", (p) => this.emit("changed", p));
+    store.on("deleted", (p) => this.emit("deleted", p));
   }
 
   start(): void {
@@ -92,9 +95,7 @@ export class NoteWatcher extends EventEmitter<WatcherEvents> {
     this.fullRescan = false;
     this.pending.clear();
     try {
-      const { changed, deleted } = await this.store.scan(full ? undefined : paths);
-      if (changed.length) this.emit("changed", changed);
-      if (deleted.length) this.emit("deleted", deleted);
+      await this.store.scan(full ? undefined : paths);
     } catch {
       // Transient (file mid-rename etc.). The next event or rescan will catch up.
     }

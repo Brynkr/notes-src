@@ -1,0 +1,91 @@
+// Tiny DOM helpers. Text is always set with textContent (never innerHTML),
+// except for the fixed icon strings below.
+
+type Child = Node | string | null | undefined | false;
+
+export function h<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, unknown> = {},
+  ...children: Child[]
+): HTMLElementTagNameMap[K] {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v as EventListener);
+    else if (k === "class") el.className = String(v);
+    else if (k === "html") el.innerHTML = String(v); // trusted icon markup only
+    else el.setAttribute(k, v === true ? "" : String(v));
+  }
+  for (const c of children) if (c !== null && c !== undefined && c !== false) el.append(c);
+  return el;
+}
+
+export function relativeTime(ms: number, now = Date.now()): string {
+  const s = Math.round((now - ms) / 1000);
+  if (s < 45) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const hr = Math.round(m / 60);
+  if (hr < 24) return `${hr} h ago`;
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  return d.toLocaleDateString(undefined, sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+}
+
+export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+export const modKey = isMac ? "⌘" : "Ctrl";
+
+/** 16px stroke icons. */
+const svg = (d: string) =>
+  `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+
+export const icons = {
+  plus: svg('<path d="M8 3v10M3 8h10"/>'),
+  close: svg('<path d="M4 4l8 8M12 4l-8 8"/>'),
+  split: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/>'),
+  trash: svg('<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>'),
+  sync: svg('<path d="M13 8a5 5 0 0 1-8.5 3.5M3 8a5 5 0 0 1 8.5-3.5"/><path d="M11.5 1.8v2.7H8.8M4.5 14.2v-2.7h2.7"/>'),
+  sidebar: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/>'),
+  search: svg('<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2L13.5 13.5"/>'),
+};
+
+/** Mini diagrams for the layout picker. */
+export const layoutIcons: Record<string, string> = {
+  "1": '<rect x="1.5" y="2.5" width="15" height="11" rx="1.5"/>',
+  "2v": '<rect x="1.5" y="2.5" width="15" height="11" rx="1.5"/><path d="M9 2.5v11"/>',
+  "2h": '<rect x="1.5" y="2.5" width="15" height="11" rx="1.5"/><path d="M1.5 8h15"/>',
+  "3": '<rect x="1.5" y="2.5" width="15" height="11" rx="1.5"/><path d="M9 2.5v11M9 8h7.5"/>',
+  "2x2": '<rect x="1.5" y="2.5" width="15" height="11" rx="1.5"/><path d="M9 2.5v11M1.5 8h15"/>',
+};
+
+export function layoutIcon(preset: string): string {
+  return `<svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">${layoutIcons[preset]}</svg>`;
+}
+
+// --- toasts ----------------------------------------------------------------
+
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
+let toastRoot: HTMLElement | null = null;
+
+export function toast(message: string, kind: "info" | "warn" | "error" = "info", actions: ToastAction[] = [], ms = 7000): void {
+  if (!toastRoot) {
+    toastRoot = h("div", { class: "toasts", role: "status", "aria-live": "polite" });
+    document.body.append(toastRoot);
+  }
+  const close = () => el.remove();
+  const el = h(
+    "div",
+    { class: `toast toast-${kind}` },
+    h("span", { class: "toast-msg" }, message),
+    ...actions.map((a) =>
+      h("button", { class: "toast-action", onclick: () => (a.run(), close()) }, a.label),
+    ),
+    h("button", { class: "icon-btn toast-close", "aria-label": "Dismiss", html: icons.close, onclick: close }),
+  );
+  toastRoot.append(el);
+  if (ms > 0) setTimeout(close, ms);
+}

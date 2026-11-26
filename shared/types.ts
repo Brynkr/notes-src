@@ -8,6 +8,8 @@ export interface NoteMeta {
   tags: string[];
   /** True for "... (conflict YYYY-MM-DD host).md" copies. */
   conflict: boolean;
+  /** sha256 of the file's bytes. Lets HTTP clients (KindleHub, scripts) sync only what changed. */
+  hash: string;
 }
 
 export interface NoteContent {

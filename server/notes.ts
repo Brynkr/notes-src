@@ -5,13 +5,18 @@
 // merges while a file is half-written.
 
 import { createHash, randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { NoteContent, NoteMeta, SaveResponse } from "../shared/types.ts";
 import type { Queue } from "./git.ts";
+import { extractTitle, parseTags, splitFrontMatter } from "../shared/markdown.ts";
 import { conflictCopyName, isConflictCopy } from "./sync.ts";
 
-export const NOTE_EXT = /\.(md|markdown)$/i;
+export { extractTitle, parseTags, splitFrontMatter };
+
+export { NOTE_EXT } from "../shared/markdown.ts";
+import { NOTE_EXT } from "../shared/markdown.ts";
 
 export function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
@@ -42,66 +47,10 @@ export function noteFilename(title: string, d: Date = new Date()): string {
   return `${stamp}-${slugify(title)}.md`;
 }
 
-const FRONT_MATTER_RE = /^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/;
-
-/** Split off YAML front matter. Returns the raw YAML (without fences) and the body. */
-export function splitFrontMatter(text: string): { yaml: string | null; body: string } {
-  const m = FRONT_MATTER_RE.exec(text);
-  if (!m) return { yaml: null, body: text };
-  return { yaml: m[1], body: text.slice(m[0].length) };
-}
-
-/** Minimal reader for `tags:` in front matter: flow list, comma string, or block list. */
-export function parseTags(yaml: string | null): string[] {
-  if (!yaml) return [];
-  const lines = yaml.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^tags\s*:\s*(.*)$/.exec(lines[i]);
-    if (!m) continue;
-    const rest = m[1].trim();
-    const clean = (t: string) => t.trim().replace(/^["']|["']$/g, "").trim();
-    if (rest.startsWith("[")) {
-      return rest.replace(/^\[|\]$/g, "").split(",").map(clean).filter(Boolean);
-    }
-    if (rest) return rest.split(",").map(clean).filter(Boolean);
-    const tags: string[] = [];
-    for (let j = i + 1; j < lines.length; j++) {
-      const item = /^\s*-\s+(.*)$/.exec(lines[j]);
-      if (!item) break;
-      tags.push(clean(item[1]));
-    }
-    return tags.filter(Boolean);
-  }
-  return [];
-}
-
-/** Title: first H1, else first non-empty line, else a name derived from the filename. */
-export function extractTitle(text: string, filename: string): string {
-  const { body } = splitFrontMatter(text);
-  let inFence = false;
-  let firstLine: string | null = null;
-  for (const raw of body.split(/\r?\n/)) {
-    const line = raw.trimEnd();
-    if (/^\s{0,3}(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    const h1 = /^\s{0,3}#[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
-    if (h1) return h1[1].trim();
-    if (firstLine === null && line.trim()) {
-      firstLine = line.trim().replace(/^(#{1,6}|[-*+>]|\d+\.)\s+/, "").trim();
-    }
-  }
-  if (firstLine) return firstLine.length > 80 ? firstLine.slice(0, 79) + "…" : firstLine;
-  const stem = path.posix.basename(filename).replace(NOTE_EXT, "");
-  const named = stem.replace(/^\d{8}-\d{6}-?/, "").replace(/[-_]+/g, " ").trim();
-  return named || stem;
-}
-
-export function metaFor(relPath: string, text: string, modifiedMs: number): NoteMeta {
+export function metaFor(relPath: string, text: string, modifiedMs: number, hash: string): NoteMeta {
   return {
     path: relPath,
+    hash,
     title: extractTitle(text, relPath),
     modifiedMs,
     tags: parseTags(splitFrontMatter(text).yaml),
@@ -146,7 +95,18 @@ interface Known {
   meta: NoteMeta;
 }
 
-export class NoteStore {
+export interface NoteStoreEvents {
+  /** Notes whose content on disk differs from what the app last saw (external edits, merges). */
+  changed: [paths: string[]];
+  deleted: [paths: string[]];
+}
+
+/**
+ * Emits `changed`/`deleted` whenever any scan notices a difference, whoever
+ * triggered the scan (watcher, list request, startup), so no change is
+ * silently absorbed.
+ */
+export class NoteStore extends EventEmitter<NoteStoreEvents> {
   readonly root: string;
   private readonly lock: Queue;
   private readonly machineName: string;
@@ -155,6 +115,7 @@ export class NoteStore {
   readonly known = new Map<string, Known>();
 
   constructor(opts: NoteStoreOptions) {
+    super();
     this.root = path.resolve(opts.root);
     this.lock = opts.worktreeLock;
     this.machineName = opts.machineName;
@@ -216,7 +177,7 @@ export class NoteStore {
       const buf = await fs.readFile(abs).catch(() => null);
       if (!buf) continue;
       const hash = sha256(buf);
-      const meta = metaFor(rel, buf.toString("utf8"), st.mtimeMs);
+      const meta = metaFor(rel, buf.toString("utf8"), st.mtimeMs, hash);
       this.known.set(rel, { hash, mtimeMs: st.mtimeMs, size: st.size, meta });
       if (!prev || prev.hash !== hash) changed.push(rel);
     }
@@ -228,6 +189,8 @@ export class NoteStore {
         }
       }
     }
+    if (changed.length) this.emit("changed", changed);
+    if (deleted.length) this.emit("deleted", deleted);
     return { changed, deleted };
   }
 
@@ -317,7 +280,8 @@ export class NoteStore {
   private async remember(rel: string, abs: string, buf: Buffer): Promise<void> {
     const st = await fs.stat(abs).catch(() => null);
     if (!st) return;
-    this.known.set(rel, { hash: sha256(buf), mtimeMs: st.mtimeMs, size: st.size, meta: metaFor(rel, buf.toString("utf8"), st.mtimeMs) });
+    const hash = sha256(buf);
+    this.known.set(rel, { hash, mtimeMs: st.mtimeMs, size: st.size, meta: metaFor(rel, buf.toString("utf8"), st.mtimeMs, hash) });
   }
 }
 

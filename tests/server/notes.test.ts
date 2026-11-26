@@ -104,6 +104,15 @@ describe("NoteStore", () => {
     assert.equal(fs.readFileSync(path.join(dir, "d.md"), "utf8"), "# D\n\nstill typing\n");
   });
 
+  test("a scan triggered by list() still reports external deletes", async () => {
+    await store.write("x.md", "# x\n", null);
+    const deleted: string[] = [];
+    store.on("deleted", (p) => deleted.push(...p));
+    fs.rmSync(path.join(dir, "x.md"));
+    await store.list();
+    assert.deepEqual(deleted, ["x.md"]);
+  });
+
   test("no temp files are left behind", async () => {
     for (let i = 0; i < 20; i++) await store.write("t.md", `# t ${i}\n`, i === 0 ? null : sha256(`# t ${i - 1}\n`));
     assert.deepEqual(fs.readdirSync(dir), ["t.md"]);
