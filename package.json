@@ -1,0 +1,31 @@
+{
+  "name": "notes-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Git-backed Markdown notes: one small server that serves a web UI and syncs a folder of notes through git.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/server.js",
+    "dev": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test --test-concurrency=1 \"tests/**/*.test.ts\"",
+    "test:ui": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning tests/ui/smoke.mjs"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.11.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/search": "^6.7.3",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.44.2",
+    "@types/node": "^26.6.11",
+    "codemirror": "^6.0.2",
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.19.0",
+    "typescript": "^7.0.2"
+  }
+}
