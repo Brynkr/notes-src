@@ -1,6 +1,6 @@
 # Handover: Git-backed Markdown Notes App
 
-Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 25 November 2026.
+Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 27 November 2026 (stack decided, M0–M6 built; see **Section 17** for what changed and why).
 
 ## 1. How to use this document
 
@@ -33,26 +33,27 @@ Non-goals (for v1):
 | Area | Decision |
 | --- | --- |
 | Users | Single user (the owner), several machines they control |
+| Platforms | Windows, Linux, macOS desktops; a web UI hosted on the owner's Raspberry Pi (phones, any browser); later KindleHub (decided 27 Nov 2026) |
 | Storage | Markdown files in a folder that is a git repo, hosted on GitHub |
-| Sync | Via git, driven by the app. No custom server |
-| Interface | Desktop GUI application (not terminal-based) |
+| Sync | Via git, driven by the app. No custom sync server: every machine running the app is a git client of GitHub. Devices that can't run git (phone browser, KindleHub) talk HTTP to a machine running the app, normally the Pi (decided 27 Nov 2026) |
+| Interface | GUI, not terminal-based. Desktop: the app's web UI in an installed app window. Pi: the same web UI over the home network |
 | Layout | Left sidebar plus one editor pane by default. Optional split screen up to a 2x2 grid of four panes |
 | Scope | Lightweight. Prefer fewer features done well |
 
-## 4. Recommended defaults (not yet confirmed by the owner)
+## 4. Recommended defaults
 
-These were proposed during design discussion. Follow them unless told otherwise.
+These were proposed during design discussion. Follow them unless told otherwise. 4.1 was decided on 27 Nov 2026.
 
-### 4.1 Stack
+### 4.1 Stack (decided 27 Nov 2026; replaces the original Tauri plan)
 
-- **Tauri** (Rust backend, web frontend) for a small, fast cross-platform desktop app.
-- **CodeMirror 6** as the editor, with Markdown language support.
-- **SQLite with FTS5** for the search index (via `rusqlite`). The index is disposable and rebuilt from the files.
-- **Frontend framework:** Svelte or plain TypeScript. Keep it small. Avoid heavy state libraries.
-- **Git:** shell out to the system `git` binary. Do not embed libgit2 for v1.
-- **File watching:** the Rust `notify` crate.
-
-Alternatives if the owner prefers (see open questions): Python with PySide6 (Qt), or Electron.
+- **One TypeScript codebase, two deployments.** A small Node.js server (`server/`) serves the web UI and runs git in the background. On a desktop it listens on `127.0.0.1` and the owner uses it as an installed app window (Chrome/Edge "Install app"). On the Raspberry Pi it listens on the LAN behind a password.
+  - Why: the owner wants the same UI on the Pi for phones and other devices, and KindleHub later. A web server backend serves all of them with one codebase and one sync engine. Tauri would have needed a second backend for the Pi.
+  - A native wrapper (Tauri or Electron pointing at the local server) can be added later without changing the backend.
+- **Node.js 22.13+** (24 LTS recommended). The server has **no runtime npm dependencies**: it uses `node:http`, `node:sqlite` (FTS5 included) and `fs.watch`. `npm run build` bundles it into `dist/server.js`, and `dist/` is all that gets deployed.
+- **CodeMirror 6** as the editor, with Markdown language support. Frontend is plain TypeScript (no framework), bundled with esbuild.
+- **SQLite with FTS5** for the search index, via Node's built-in `node:sqlite`. The index is disposable and rebuilt from the files.
+- **Git:** shell out to the system `git` binary (unchanged).
+- **Server → UI events:** Server-Sent Events (`/api/events`). UI → server: plain JSON HTTP.
 
 ### 4.2 Authentication
 
@@ -69,17 +70,24 @@ Use whatever the machine already has: SSH keys or a credential helper, configure
 ### 4.4 What lives where
 
 - **In the repo:** the notes, a `.gitignore`.
-- **Not in the repo:** the search index, window and layout state, and app settings. These live in the OS app-data and config directories.
+- **Not in the repo:** the search index and app settings (OS app-data and config directories), and window/layout state (the browser's `localStorage`, so each device keeps its own layout).
 
 ## 5. Open questions (ask the owner)
 
-1. **Final stack:** Tauri (Rust plus TypeScript) versus PySide6 (Python) versus Electron. This decides the project structure and module language.
-2. **Operating systems** to support first (Linux, macOS, Windows, any combination).
-3. **Phone access:** wanted at all? If yes, the plan is a separate path (GitHub API or an existing git client app), not git inside this app.
-4. **Notes location:** repo root or a subfolder? Is there an existing repo of notes to adopt, or start fresh?
-5. **Subfolders and tags:** flat folder only for v1, or support nested folders in the sidebar?
-6. **Wiki links** (`[[note title]]`) and backlinks: wanted, and in which milestone?
-7. **Default branch name** and remote name (assume `main` and `origin` until told).
+Answered on 27 Nov 2026:
+
+1. ~~Final stack~~: TypeScript/Node server + web UI (see 4.1).
+2. ~~Operating systems~~: Windows, Linux, macOS, plus the Pi web UI and KindleHub later.
+3. ~~Phone access~~: yes, through the web UI hosted on the Pi.
+
+Still open (current behaviour in brackets):
+
+4. **Notes location:** repo root or a subfolder? Is there an existing repo of notes to adopt? [`--notes-dir`, default the repo root]
+5. **Subfolders:** [nested folders are listed in the sidebar with a folder prefix; new notes are created at the notes root; no folder UI]
+6. **Wiki links** (`[[note title]]`) and backlinks: wanted, and in which milestone? [not built]
+7. **Default branch and remote name** [`main` and `origin`, configurable]
+8. **KindleHub integration:** which Kindle model/firmware, is it jailbroken, and what can KindleHub run (HTTP client, local storage)? This decides whether it uses the HTTP sync protocol in `docs/API.md` (current plan) or something else.
+9. **Pi access from outside the home:** LAN only, or via a VPN such as Tailscale? [LAN, HTTP Basic auth; do not expose to the internet]
 
 ## 6. Architecture overview
 
@@ -108,40 +116,39 @@ Principles:
 4. **One git operation at a time.** All git commands go through a single queue with a mutex to avoid `index.lock` errors.
 5. **Never lose text.** When in doubt, keep both versions.
 
-## 7. Suggested project structure (Tauri variant)
+## 7. Project structure (as built)
 
 ```
 notes-app/
-  src-tauri/
-    src/
-      main.rs          app setup, window, command registration
-      commands.rs      tauri commands exposed to the frontend
-      fs.rs            list/read/write/delete/create notes, filename generation
-      watcher.rs       debounced file-change events -> frontend + index
-      index.rs         SQLite FTS5: build, update, query
-      git.rs           thin wrapper over the git binary (status, add, commit, fetch, merge, push, show)
-      sync.rs          sync loop, policy, conflict-copy logic, state machine
-      config.rs        settings load/save (repo path, remote, branch, intervals)
-    Cargo.toml
-  src/
-    main.ts
+  server/
+    main.ts          entry point: wires everything, CLI, shutdown
+    config.ts        settings file + CLI flags, password hashing, OS dirs
+    git.ts           the ONLY place git is spawned; serialised queue; error classification
+    sync.ts          SyncEngine (10.2/10.3) and SyncScheduler (10.1)
+    notes.ts         NoteStore: list/read/create/delete and the single write path
+    watcher.ts       debounced fs.watch + periodic rescan
+    search.ts        SQLite FTS5 index
+    http.ts          JSON API, SSE, static files, auth/CSRF/Host checks
+  shared/
+    types.ts         API types used by server and UI
+    markdown.ts      title/front-matter helpers used by both
+  web/
+    main.ts          UI wiring, shortcuts, server events
+    api.ts           fetch wrappers + EventSource
     state/
-      workspace.ts     layout preset, panes, active pane, persisted
-      buffers.ts       shared document buffers keyed by note path
-    ui/
-      Sidebar          note list, search box, new note
-      PaneGrid         CSS grid for the layout presets
-      Pane             header (title, dirty dot, close) + editor
-      StatusBar        sync state, last sync time, errors
-    editor/
-      cm.ts            CodeMirror setup, extensions, shared-state wiring
+      workspace.ts   layout preset, panes, active pane (localStorage)
+      buffers.ts     shared buffers, autosave, crash stash
+    editor/cm.ts     CodeMirror setup; replays edits between panes sharing a buffer
+    ui/              sidebar, panes, status bar + conflict banner, DOM helpers
+    static/          index.html, style.css, manifest, icons
   tests/
-    sync/              integration tests using temp git repos
-  README.md
-  HANDOVER.md          this document
+    sync/            Section 13 scenarios against temp git repos
+    server/          note store, watcher, search, HTTP
+    ui/smoke.mjs     end-to-end in headless Chrome with a second "machine"
+  deploy/            systemd unit for the Pi
+  docs/API.md        HTTP API and sync protocol for non-git clients (KindleHub)
+  scripts/build.mjs  esbuild bundling into dist/
 ```
-
-If the owner picks PySide6 or Electron, keep the same module boundaries (fs, watcher, index, git, sync, config on one side, workspace and buffers on the other).
 
 ## 8. Data model
 
@@ -155,6 +162,8 @@ interface NoteMeta {
   tags: string[];      // from front matter, if present
 }
 ```
+
+(As built, `NoteMeta` also has `conflict: boolean` and `hash: string`; see `shared/types.ts`.)
 
 Frontend workspace state (persisted locally, restored on launch):
 
@@ -287,6 +296,19 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 
 **Later (not planned):** wiki links and backlinks, tags UI, Markdown preview, per-note history from `git log`, draggable dividers.
 
+### Status (27 Nov 2026)
+
+| Milestone | Status |
+| --- | --- |
+| M0 sync prototype | Done. All 10 Section 13 scenarios plus extras pass (`tests/sync`) |
+| M1 skeleton | Done. Folder is configured by CLI/settings file, not yet in the UI |
+| M2 buffers + panes + watcher | Done |
+| M3 search | Done |
+| M4 in-app sync | Done. "Two machines converge" is tested with real git; not yet tried on two physical machines |
+| M5 conflict UI | Done (banner, chips open the copy beside the original, toast on save conflicts) |
+| M6 split screen | Done, all five presets, restore on reload. Draggable dividers not built |
+| M7 polish | Partly done: shortcuts, errors, phone layout, dark mode. Not done: settings screen, fuzzy quick-switch (Ctrl+K searches instead), packaging/installers |
+
 ## 13. Testing
 
 Sync is the riskiest part. Test it with real git against temporary directories, never against the owner's actual notes repo.
@@ -339,3 +361,31 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 - **Buffer:** the in-memory text of an open note, shared by every pane showing it.
 - **Conflict copy:** a saved duplicate of the other side’s version of a note, created when automatic merging cannot reconcile edits.
 - **Notes root:** the folder inside the repo that holds the Markdown files.
+
+## 17. Decision log and notes for the next session
+
+**27 Nov 2026: stack and topology (owner delegated the call).**
+
+- The owner wants a web UI on their Raspberry Pi and, eventually, KindleHub (their own Kindle software) reading and writing notes, syncing automatically on wifi.
+- Chosen topology: **every machine that runs the app is a git client of GitHub**, and the Pi is one of them. Devices that can't run git talk HTTP to the Pi using the protocol in `docs/API.md`. Conflicts are resolved the same way on both paths (keep both, conflict copy).
+- Rejected: desktops syncing through a custom Pi protocol. It would need a second sync design and conflict layer, and desktops would stop syncing whenever the Pi is off. If the owner later wants the Pi as the hub for desktops too, point their `origin` at a bare repo on the Pi and have the Pi mirror it to GitHub. That's configuration, not code.
+- Stack moved from Tauri to TypeScript/Node so the desktop and the Pi share one backend (4.1).
+
+**Behaviour worth knowing**
+
+- Autosave runs about 0.6 s after typing stops. Sync runs 8 s after the last save (`--sync-idle`), every 3 min, on window focus (at most every 30 s), on demand, and once at shutdown (max 10 s).
+- Every save carries the hash the editor's text was based on. If the file changed on disk in the meantime (a merge, another editor, another browser), the server saves the disk version as a conflict copy and keeps the editor's text. This is how 10.5 is enforced, and it protects HTTP clients like KindleHub the same way.
+- Unsaved editor text is also kept in `localStorage` until the server confirms the save, and replayed on the next launch.
+- Deleting a note removes the file; the next auto-commit records the deletion (equivalent to `git rm` + commit).
+- Sync refuses to touch a repo that is mid-merge/rebase or on another branch, and says so in the status bar.
+- Push rejections caused by the remote moving (including two pushes landing at the same moment) are retried up to 3 times with fetch + merge.
+- Line endings: the editor works in LF. When saving, if the file on disk contains any CRLF, the whole file is written with CRLF; otherwise LF. New notes use LF.
+- Conflict copies are named `<stem> (conflict YYYY-MM-DD <host>).md`, where `<host>` is the other machine (from its auto-commit message) for git merges, or this machine for save-time conflicts.
+
+**Known gaps / next steps (suggested order)**
+
+1. Try it on real machines: Windows desktop + Pi + GitHub (see README).
+2. Settings screen (repo path, remote, branch, intervals, password).
+3. Pi packaging: a one-line installer script and update path.
+4. KindleHub: confirm the device constraints (open question 8), then implement a client against `docs/API.md`. Possibly add a no-JavaScript read/edit page if the Kindle browser is the target.
+5. Quick-switch fuzzy finder (M7), then the "Later" list in Section 12.

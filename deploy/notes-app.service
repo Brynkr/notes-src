@@ -1,0 +1,19 @@
+# User service for the Raspberry Pi (or any Linux machine).
+# Install:  cp notes-app.service ~/.config/systemd/user/ && systemctl --user enable --now notes-app
+# Keep it running after logout:  sudo loginctl enable-linger "$USER"
+# Settings come from ~/.config/notes-app/config.json (create it with --save).
+
+[Unit]
+Description=Notes (git-backed Markdown notes server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node %h/notes-app/server.js
+Restart=on-failure
+RestartSec=5
+# Allow the final sync on shutdown to finish (it is capped at 10 s).
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

@@ -28,7 +28,6 @@ const markdownHighlight = HighlightStyle.define([
   { tag: t.monospace, fontFamily: "var(--mono)", fontSize: "0.9em", backgroundColor: "var(--code-bg)", borderRadius: "3px" },
   { tag: t.quote, color: "var(--muted)", fontStyle: "italic" },
   { tag: [t.processingInstruction, t.contentSeparator, t.meta], color: "var(--faint)" },
-  { tag: t.list, color: "var(--accent)" },
   { tag: [t.keyword, t.atom, t.bool], color: "var(--accent)" },
   { tag: [t.string, t.number], color: "var(--string)" },
   { tag: t.comment, color: "var(--faint)", fontStyle: "italic" },

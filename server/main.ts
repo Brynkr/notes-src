@@ -1,5 +1,6 @@
 // Entry point: wires config, git, notes, watcher, search, sync and HTTP.
 
+import "./quiet.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -177,7 +178,7 @@ async function main(): Promise<void> {
   const stop = async () => {
     if (stopping) process.exit(1); // second Ctrl+C: leave now
     stopping = true;
-    console.log("Shutting down: final sync (up to 10 s)…");
+    console.log(cfg.sync ? "Shutting down: final sync (up to 10 s)…" : "Shutting down.");
     watcher.stop();
     app.server.close();
     app.closeClients();

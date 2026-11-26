@@ -4,11 +4,19 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { MARK_END, MARK_START, type SearchHit } from "../shared/types.ts";
 import { extractTitle, splitFrontMatter } from "./notes.ts";
 
 const SCHEMA_VERSION = 1;
+
+type DatabaseSync = DatabaseSyncType;
+// Loaded lazily (not a static import) so server/quiet.ts can filter its warning first.
+let DatabaseSyncCtor: typeof DatabaseSyncType | null = null;
+function sqlite(): typeof DatabaseSyncType {
+  DatabaseSyncCtor ??= (process.getBuiltinModule("node:sqlite") as typeof import("node:sqlite")).DatabaseSync;
+  return DatabaseSyncCtor;
+}
 
 export class SearchIndex {
   private db: DatabaseSync;
@@ -22,11 +30,11 @@ export class SearchIndex {
   private open(): DatabaseSync {
     if (this.file !== ":memory:") fs.mkdirSync(path.dirname(this.file), { recursive: true });
     try {
-      return this.init(new DatabaseSync(this.file));
+      return this.init(new (sqlite())(this.file));
     } catch {
       // Corrupt or from an incompatible version: throw it away and start again.
       for (const suffix of ["", "-wal", "-shm", "-journal"]) fs.rmSync(this.file + suffix, { force: true });
-      return this.init(new DatabaseSync(this.file));
+      return this.init(new (sqlite())(this.file));
     }
   }
 

@@ -16,7 +16,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import type { AppInfo, SaveRequest, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 import { verifyPassword } from "./config.ts";
-import { BadPath, NotFound, type NoteStore } from "./notes.ts";
+import { BadPath, Changed, NotFound, type NoteStore } from "./notes.ts";
 import type { SearchIndex } from "./search.ts";
 
 export interface AppContext {
@@ -141,7 +141,7 @@ export function createApp(ctx: AppContext) {
       }
       case "DELETE /api/note": {
         const p = url.searchParams.get("path") ?? "";
-        await ctx.store.delete(p);
+        await ctx.store.delete(p, url.searchParams.get("hash") ?? undefined);
         ctx.search.remove(p);
         ctx.onSaved([]);
         broadcast({ type: "note-deleted", path: p });
@@ -246,6 +246,7 @@ export function createApp(ctx: AppContext) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
       if (err instanceof BadPath) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
+      if (err instanceof Changed) return send(res, 409, { error: err.message });
       console.error(err);
       send(res, 500, { error: (err as Error).message });
     }

@@ -76,6 +76,7 @@ export function resolveNotePath(root: string, rel: string): string {
 }
 
 export class BadPath extends Error {}
+export class Changed extends Error {}
 export class NotFound extends Error {}
 
 // ---------------------------------------------------------------------------
@@ -264,9 +265,17 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return { path: name, text, hash };
   }
 
-  async delete(rel: string): Promise<void> {
+  /**
+   * Delete a note. With `expectHash`, refuse (Changed) if the file no longer
+   * has that content: an edit made elsewhere wins over a stale delete.
+   */
+  async delete(rel: string, expectHash?: string): Promise<void> {
     const abs = this.resolve(rel);
     await this.lock.run(async () => {
+      if (expectHash) {
+        const current = await fs.readFile(abs).catch(() => null);
+        if (current && sha256(current) !== expectHash) throw new Changed("The note changed since you last saw it; it was not deleted.");
+      }
       try {
         await fs.rm(abs);
       } catch (err) {

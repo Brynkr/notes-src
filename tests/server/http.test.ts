@@ -68,6 +68,14 @@ describe("HTTP API", () => {
     assert.equal((await fetch(`${s.base}/api/note?path=${encodeURIComponent(created.path)}`)).status, 404);
   });
 
+  test("DELETE with a stale hash is refused (an edit elsewhere wins)", async () => {
+    const n = await (await fetch(`${s.base}/api/notes`, { method: "POST", headers: H, body: JSON.stringify({ title: "Keep" }) })).json();
+    await fetch(`${s.base}/api/note`, { method: "PUT", headers: H, body: JSON.stringify({ path: n.path, text: "# Keep\n\nedited\n", baseHash: n.hash }) });
+    const r = await fetch(`${s.base}/api/note?path=${encodeURIComponent(n.path)}&hash=${n.hash}`, { method: "DELETE", headers: H });
+    assert.equal(r.status, 409);
+    assert.equal((await fetch(`${s.base}/api/note?path=${encodeURIComponent(n.path)}`)).status, 200);
+  });
+
   test("mutations need the X-Notes-App header (CSRF)", async () => {
     const r = await fetch(`${s.base}/api/notes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     assert.equal(r.status, 403);

@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "start": "node --disable-warning=ExperimentalWarning dist/server.js",
-    "dev": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning dist/server.js",
+    "start": "node dist/server.js",
+    "dev": "node scripts/build.mjs && node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "test:ui": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning tests/ui/smoke.mjs"
