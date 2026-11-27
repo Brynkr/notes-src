@@ -188,6 +188,13 @@ export class Workspace {
     this.commit(true);
   }
 
+  /** A note moved: every pane showing it follows. */
+  renamed(from: string, to: string): void {
+    if (!this.state.panes.some((p) => p.notePath === from)) return;
+    this.state = { ...this.state, panes: this.state.panes.map((p) => (p.notePath === from ? { ...p, notePath: to } : p)) };
+    this.commit(true);
+  }
+
   /** A note disappeared: empty every pane showing it. */
   noteGone(path: string): void {
     if (!this.state.panes.some((p) => p.notePath === path)) return;

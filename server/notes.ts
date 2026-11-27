@@ -12,11 +12,12 @@ import type { NoteContent, NoteMeta, SaveResponse, TrashItem } from "../shared/t
 import type { Queue } from "./git.ts";
 import { extractTitle, parseTags, splitFrontMatter } from "../shared/markdown.ts";
 import { conflictCopyName, isConflictCopy } from "./sync.ts";
+import { MODE_FOLDER, modeFolderOf, type Mode } from "../shared/modes.ts";
+import { baseName, isNotePath, isTextFile, SKIP_DIRS } from "../shared/files.ts";
 
 export { extractTitle, parseTags, splitFrontMatter };
 
 export { NOTE_EXT } from "../shared/markdown.ts";
-import { NOTE_EXT } from "../shared/markdown.ts";
 
 export function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
@@ -48,19 +49,22 @@ export function noteFilename(title: string, d: Date = new Date()): string {
 }
 
 export function metaFor(relPath: string, text: string, modifiedMs: number, hash: string): NoteMeta {
+  const note = isNotePath(relPath);
   return {
     path: relPath,
     hash,
-    title: extractTitle(text, relPath),
+    // Code and text files are named by their filename, not their first line.
+    title: note ? extractTitle(text, relPath) : baseName(relPath),
     modifiedMs,
-    tags: parseTags(splitFrontMatter(text).yaml),
+    tags: note ? parseTags(splitFrontMatter(text).yaml) : [],
     conflict: isConflictCopy(relPath),
   };
 }
 
 /**
  * Validate a client-supplied note path and resolve it under `root`.
- * Rejects absolute paths, `..`, hidden segments and non-Markdown files.
+ * Rejects absolute paths, `..`, hidden segments, and files that are neither
+ * notes nor text/code files (see shared/files.ts).
  */
 export function resolveNotePath(root: string, rel: string): string {
   if (typeof rel !== "string" || !rel || rel.length > 512) throw new BadPath("Invalid note path");
@@ -69,7 +73,7 @@ export function resolveNotePath(root: string, rel: string): string {
   if (norm !== rel || path.posix.isAbsolute(norm) || /^[A-Za-z]:/.test(norm)) throw new BadPath("Invalid note path");
   const segs = norm.split("/");
   if (segs.some((s) => s === ".." || s === "." || s.startsWith("."))) throw new BadPath("Invalid note path");
-  if (!NOTE_EXT.test(norm)) throw new BadPath("Notes must be .md files");
+  if (!isTextFile(norm)) throw new BadPath("Only notes and text or code files can be opened here");
   const abs = path.resolve(root, ...segs);
   if (!abs.startsWith(path.resolve(root) + path.sep)) throw new BadPath("Invalid note path");
   return abs;
@@ -82,6 +86,7 @@ export class TooLarge extends Error {}
 export const MAX_NOTE_BYTES = 2 * 1024 * 1024;
 export class Changed extends Error {}
 export class NotFound extends Error {}
+export class Exists extends Error {}
 
 // ---------------------------------------------------------------------------
 
@@ -140,7 +145,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return resolveNotePath(this.trashRoot, rel);
   }
 
-  /** All note paths under the root (recursive, skipping hidden folders such as .trash). */
+  /**
+   * All note and text/code file paths under the root (recursive), skipping
+   * hidden folders such as .trash and .git, dependency caches (SKIP_DIRS),
+   * and files over MAX_NOTE_BYTES.
+   */
   async walk(root: string = this.root): Promise<string[]> {
     const out: string[] = [];
     const visit = async (dirAbs: string, dirRel: string) => {
@@ -151,10 +160,13 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         return;
       }
       for (const e of entries) {
-        if (e.name.startsWith(".") || e.name === "node_modules") continue;
+        if (e.name.startsWith(".")) continue;
         const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
-        if (e.isDirectory()) await visit(path.join(dirAbs, e.name), rel);
-        else if (e.isFile() && NOTE_EXT.test(e.name)) out.push(rel);
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) await visit(path.join(dirAbs, e.name), rel);
+        } else if (e.isFile() && isTextFile(e.name)) {
+          if (isNotePath(e.name) || ((await fs.stat(path.join(dirAbs, e.name)).catch(() => null))?.size ?? Infinity) <= MAX_NOTE_BYTES) out.push(rel);
+        }
       }
     };
     await visit(root, "");
@@ -185,6 +197,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         continue;
       }
       if (!st.isFile()) continue;
+      if (!isNotePath(rel) && st.size > MAX_NOTE_BYTES) {
+        // A code file grew past the limit: stop tracking it (never opened or written).
+        if (this.known.delete(rel)) deleted.push(rel);
+        continue;
+      }
       seen.add(rel);
       const prev = this.known.get(rel);
       if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue;
@@ -208,12 +225,28 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return { changed, deleted };
   }
 
+  /** Notes (Markdown files), newest first. */
   async list(): Promise<NoteMeta[]> {
     await this.scan();
-    return [...this.known.values()].map((k) => k.meta).sort((a, b) => b.modifiedMs - a.modifiedMs);
+    return [...this.known.values()].map((k) => k.meta).filter((m) => isNotePath(m.path)).sort((a, b) => b.modifiedMs - a.modifiedMs);
+  }
+
+  /** Every file the app opens (notes and text/code files), by path, with sizes. */
+  async files(): Promise<(NoteMeta & { size: number })[]> {
+    await this.scan();
+    return [...this.known.values()].map((k) => ({ ...k.meta, size: k.size })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+
+  /** New empty file at a path the client chose (IDE mode). Refuses if it exists. */
+  async createFile(rel: string): Promise<NoteContent> {
+    const abs = this.resolve(rel);
+    if (await exists(abs)) throw new Exists(`${rel} already exists`);
+    const { hash } = await this.write(rel, "", null);
+    return { path: rel, text: "", hash };
   }
 
   async read(rel: string): Promise<NoteContent> {
+    rel = await this.followMove(rel);
     const abs = this.resolve(rel);
     let buf: Buffer;
     try {
@@ -233,8 +266,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
    * Nothing is ever silently overwritten.
    */
   async write(rel: string, text: string, baseHash: string | null): Promise<SaveResponse> {
-    const abs = this.resolve(rel);
+    this.resolve(rel); // validate before anything else
     return this.lock.run(async () => {
+      const asked = rel;
+      rel = await this.followMove(rel);
+      const abs = this.resolve(rel);
       const current = await fs.readFile(abs).catch((err: NodeJS.ErrnoException) => {
         if (err.code === "ENOENT") return null;
         throw err;
@@ -249,9 +285,10 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         throw new TooLarge(`This note is ${(bytes.length / 1048576).toFixed(1)} MB; notes are limited to 2 MB. Split it up or remove pasted data.`);
       }
       const newHash = sha256(bytes);
+      const moved = rel !== asked ? { path: rel } : {};
       if (newHash === currentHash) {
         await this.remember(rel, abs, bytes);
-        return { hash: newHash };
+        return { hash: newHash, ...moved };
       }
 
       let conflictCopy: string | undefined;
@@ -266,13 +303,15 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await atomicWrite(abs, bytes);
       await this.remember(rel, abs, bytes);
-      return conflictCopy ? { hash: newHash, conflictCopy } : { hash: newHash };
+      return conflictCopy ? { hash: newHash, conflictCopy, ...moved } : { hash: newHash, ...moved };
     });
   }
 
-  async create(title: string): Promise<NoteContent> {
+  /** New note with a server-chosen filename, in a mode's folder (or the root when `mode` is null). */
+  async create(title: string, mode: Mode | null = null): Promise<NoteContent> {
     const clean = title.trim().replace(/\s+/g, " ").slice(0, 200) || "Untitled";
-    let name = noteFilename(clean, this.now());
+    const folder = mode ? MODE_FOLDER[mode] + "/" : "";
+    let name = folder + noteFilename(clean, this.now());
     for (let i = 2; this.known.has(name) || (await exists(this.resolve(name))); i++) {
       name = name.replace(/(-\d+)?\.md$/, `-${i}.md`);
     }
@@ -357,6 +396,83 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     const n = (await this.walk(this.trashRoot)).length;
     await this.lock.run(() => fs.rm(this.trashRoot, { recursive: true, force: true }));
     return n;
+  }
+
+  /**
+   * Notes outside Home/ and Work/ are moved into Home/ (keeping any subfolders),
+   * so the two modes are just two folders. Runs at startup; the next sync
+   * commits the moves (git records them as renames, so history follows).
+   *
+   * If Home/ already has that path with other content (another machine moved
+   * the note before this one's edits reached it):
+   * - same bytes: the root file is a leftover and is removed;
+   * - the Home/ copy is an earlier version of the root file (`isEarlier`,
+   *   checked against git history): the root file's newer text replaces it;
+   * - otherwise both were edited: the root file is kept as a conflict copy
+   *   next to the Home/ note, so it shows in the conflict banner.
+   * Nothing is ever lost. Returns [from, to] pairs.
+   */
+  async moveIntoModes(isEarlier?: (rel: string, homeAbs: string) => Promise<boolean>): Promise<[string, string][]> {
+    return this.lock.run(async () => {
+      const moved: [string, string][] = [];
+      // An existing "home"/"work" folder in another case is used as is.
+      const folders = new Map<Mode, string>();
+      for (const e of await fs.readdir(this.root, { withFileTypes: true }).catch(() => [])) {
+        const m = e.isDirectory() ? modeFolderOf(e.name + "/x") : null;
+        if (m) folders.set(m, e.name);
+      }
+      const home = folders.get("home") ?? MODE_FOLDER.home;
+      const all = await this.walk();
+      const taken = new Set(all);
+      for (const rel of all) {
+        // Only notes move; code and text files stay put (moving a project could break it).
+        if (modeFolderOf(rel) || !isNotePath(rel)) continue;
+        const src = this.resolve(rel);
+        const buf = await fs.readFile(src).catch(() => null);
+        if (!buf) continue;
+        let dest = `${home}/${rel}`;
+        const destAbs = this.resolve(dest);
+        const existing = await fs.readFile(destAbs).catch(() => null);
+        this.known.delete(rel);
+        if (existing && existing.equals(buf)) {
+          await fs.rm(src);
+        } else if (existing && isEarlier && (await isEarlier(rel, destAbs))) {
+          await atomicWrite(destAbs, buf);
+          await fs.rm(src);
+          await this.remember(dest, destAbs, buf);
+        } else {
+          if (existing) {
+            const date = this.now();
+            const ymd = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+            dest = await conflictCopyName(this.root, dest, ymd, this.machineName, taken);
+          }
+          taken.add(dest);
+          const abs = this.resolve(dest);
+          await fs.mkdir(path.dirname(abs), { recursive: true });
+          await moveFile(src, abs);
+          await this.remember(dest, abs, buf);
+        }
+        moved.push([rel, dest]);
+        if (path.dirname(src) !== this.root) await removeEmptyDirs(path.dirname(src), path.join(this.root, rel.split("/")[0]));
+      }
+      return moved;
+    });
+  }
+
+  /**
+   * A client that still has a note's pre-Home/ path (an open tab from before
+   * the move, an offline client) is sent to where the note is now, rather
+   * than recreating it at the root.
+   */
+  private async followMove(rel: string): Promise<string> {
+    if (modeFolderOf(rel) || !isNotePath(rel)) return rel;
+    if (await exists(this.resolve(rel))) return rel;
+    // Root notes only ever move into Home/ (or a "home" folder made by hand).
+    for (const folder of [MODE_FOLDER.home, MODE_FOLDER.home.toLowerCase()]) {
+      const candidate = `${folder}/${rel}`;
+      if (await exists(this.resolve(candidate))) return candidate;
+    }
+    return rel;
   }
 
   private async remember(rel: string, abs: string, buf: Buffer): Promise<void> {

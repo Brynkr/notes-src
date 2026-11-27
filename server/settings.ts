@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Git, GitError } from "./git.ts";
+import { isTextFile, SKIP_DIRS } from "../shared/files.ts";
 import { writeRepoDefaults } from "./runtime.ts";
 
 export class SettingsError extends Error {}
@@ -196,7 +197,7 @@ export async function setupRepo(opts: { repoPath: string; remoteUrl: string | nu
     if (stray.length) {
       throw new SettingsError(
         `That folder already has other files in it (${stray.slice(0, 3).join(", ")}${stray.length > 3 ? ", …" : ""}). ` +
-          "Everything in the notes folder gets synced to GitHub, so choose an empty folder or one that only holds notes.",
+          "Everything in the notes folder gets synced to GitHub, so choose an empty folder or one that only holds notes, text and code.",
       );
     }
     await git.run(["init", "-q", "-b", branch]);
@@ -213,7 +214,11 @@ export async function setupRepo(opts: { repoPath: string; remoteUrl: string | nu
   return message;
 }
 
-/** Files that aren't notes (Markdown or text), so we never turn e.g. Documents into a repo. */
+/**
+ * Files that aren't notes or text/code files (shared/files.ts), so we never
+ * turn e.g. Documents (Office files, photos) into a repo. Dependency caches
+ * such as node_modules are skipped, like everywhere else.
+ */
 export function nonNoteFiles(dir: string, limit = 20): string[] {
   const out: string[] = [];
   const walk = (d: string, rel: string, depth: number) => {
@@ -228,8 +233,9 @@ export function nonNoteFiles(dir: string, limit = 20): string[] {
       if (out.length >= limit) return;
       if (e.name.startsWith(".") || e.name === "Thumbs.db" || e.name === "desktop.ini") continue;
       const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(path.join(d, e.name), r, depth + 1);
-      else if (!/\.(md|markdown|txt)$/i.test(e.name)) out.push(r);
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(path.join(d, e.name), r, depth + 1);
+      } else if (!isTextFile(e.name)) out.push(r);
     }
   };
   walk(dir, "", 0);

@@ -1,6 +1,7 @@
 // Left column: new note, search box, note list (or search results).
 
 import { MARK_END, MARK_START, type NoteMeta, type SearchHit } from "../../shared/types.ts";
+import { MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
 import { api } from "../api.ts";
 import { h, icons, modKey, relativeTime } from "./dom.ts";
 
@@ -9,7 +10,13 @@ export interface SidebarDeps {
   today: () => void;
   open: (path: string, toSide: boolean) => void;
   create: (title: string) => Promise<void>;
+  /** IDE mode: a new (empty) file at a path inside the current mode's folder. */
+  createFile: (pathInMode: string) => Promise<void>;
+  /** IDE mode's file tree and changes, shown instead of the search box and note list. */
+  explorer: HTMLElement;
   collapse: () => void;
+  mode: () => Mode;
+  setMode: (mode: Mode) => void;
 }
 
 export class Sidebar {
@@ -19,6 +26,10 @@ export class Sidebar {
   private readonly newForm: HTMLFormElement;
   private readonly newInput: HTMLInputElement;
   private readonly countEl: HTMLElement;
+  private readonly modeButtons: HTMLButtonElement[];
+  private readonly searchWrap: HTMLElement;
+  private readonly footEl: HTMLElement;
+  private ide = false;
   private notes: NoteMeta[] = [];
   private hits: SearchHit[] | null = null;
   private activePath: string | null = null;
@@ -57,13 +68,17 @@ export class Sidebar {
           e.preventDefault();
           const title = this.newInput.value;
           this.hideNew();
-          await this.deps.create(title);
+          if (this.ide) await this.deps.createFile(title.trim());
+          else await this.deps.create(title);
         },
       },
       this.newInput,
     );
     this.list = h("div", { class: "note-list", role: "listbox", "aria-label": "Notes" });
     this.countEl = h("span", { class: "note-count" });
+    this.modeButtons = MODES.map((m) =>
+      h("button", { type: "button", "data-mode": m, "aria-pressed": "false", title: `${MODE_LABEL[m]} notes (Alt+M switches)`, onclick: () => deps.setMode(m) }, MODE_LABEL[m]),
+    );
     this.el = h(
       "aside",
       { class: "sidebar", "aria-label": "Notes sidebar" },
@@ -77,11 +92,33 @@ export class Sidebar {
         h("button", { class: "icon-btn", title: `New note (Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
         h("button", { class: "icon-btn hide-wide", title: "Hide sidebar", "aria-label": "Hide sidebar", html: icons.sidebar, onclick: () => this.deps.collapse() }),
       ),
-      h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput),
+      h("div", { class: "segmented mode-switch", role: "group", "aria-label": "Mode" }, ...this.modeButtons),
+      (this.searchWrap = h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput)),
       this.newForm,
       this.list,
-      h("div", { class: "sidebar-foot" }, `${modKey}+P go to note · ${modKey}+K search`),
+      deps.explorer,
+      (this.footEl = h("div", { class: "sidebar-foot" }, `${modKey}+P go to note · ${modKey}+K search`)),
     );
+  }
+
+  /** IDE mode: file tree instead of the note list; + makes a file instead of a note. */
+  setIde(on: boolean): void {
+    this.ide = on;
+    this.el.classList.toggle("is-ide", on);
+    this.searchWrap.hidden = on;
+    this.list.hidden = on;
+    this.countEl.hidden = on;
+    this.deps.explorer.hidden = !on;
+    this.footEl.textContent = on ? `${modKey}+P go to file · Ctrl+click opens to the side` : `${modKey}+P go to note · ${modKey}+K search`;
+    this.newInput.placeholder = on ? "New file, e.g. scripts/hello.py" : "Title for the new note";
+    this.newInput.setAttribute("aria-label", on ? "New file path" : "New note title");
+  }
+
+  /** Show which mode is on; results from the other mode are re-queried. */
+  modeChanged(): void {
+    const mode = this.deps.mode();
+    for (const b of this.modeButtons) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+    this.searchInput.placeholder = `Search ${MODE_LABEL[mode]}`;
   }
 
   setNotes(notes: NoteMeta[]): void {
@@ -129,7 +166,7 @@ export class Sidebar {
       return;
     }
     try {
-      const hits = await api.search(q);
+      const hits = await api.search(q, this.deps.mode());
       if (seq !== this.searchSeq) return; // a newer query is in flight
       this.hits = hits;
       this.cursor = hits.length ? 0 : -1;
@@ -196,7 +233,8 @@ export class Sidebar {
       return;
     }
     for (const n of this.notes) {
-      const folder = n.path.includes("/") ? n.path.slice(0, n.path.lastIndexOf("/")) + " · " : "";
+      const shown = pathInMode(n.path);
+      const folder = shown.includes("/") ? shown.slice(0, shown.lastIndexOf("/")) + " · " : "";
       this.list.append(this.item(n.path, n.title, folder + relativeTime(n.modifiedMs), n.conflict));
     }
   }

@@ -86,7 +86,7 @@ Answered on 27 Nov 2026:
 
 Still open (current behaviour in brackets):
 
-5. **Subfolders:** [nested folders are listed in the sidebar with a folder prefix; new notes are created at the notes root; no folder UI]
+5. **Subfolders:** partly answered 28 Nov: top-level `Home/` and `Work/` folders are the two modes (Section 17). [folders inside a mode are listed with a folder prefix; new notes go to the mode's folder; no folder UI]
 7. **Default branch and remote name** [`main` and `origin`, configurable in Settings]
 10. **Which Pi?** The owner has a Raspberry Pi 2 (armv7, 1 GB) that already runs other services. If that's the notes host, Node must stay on 22 (Node 24 has no armv7 build); the installer handles this. [supported]
 11. **Link renames:** should changing a note's title rewrite `[[links]]` to it in other notes? [no; old links show as missing]
@@ -139,6 +139,8 @@ notes-app/
     markdown.ts      title/front-matter helpers used by both
     links.ts         [[wiki link]] parsing and resolution
     fuzzy.ts         quick-switcher matching
+    modes.ts         Home/Work modes: which folder a path belongs to
+    files.ts         which text/code files the app opens (IDE mode), language names
   web/
     main.ts          UI wiring, shortcuts, server events
     api.ts           fetch wrappers + EventSource
@@ -147,7 +149,8 @@ notes-app/
       buffers.ts     shared buffers, autosave, crash stash
     editor/cm.ts     CodeMirror setup; replays edits between panes sharing a buffer
     editor/wikilinks.ts  link styling, Ctrl/Cmd+click, [[ completion
-    ui/              sidebar, panes (+ backlinks), status bar, conflict banner, quick switcher, settings + setup
+    editor/languages.ts  code highlighting for IDE mode and code fences
+    ui/              sidebar, panes (+ backlinks), status bar, conflict banner, quick switcher, settings + setup, explorer + diff view (IDE mode)
     static/          index.html, style.css, manifest, icons
   tests/
     sync/            Section 13 scenarios against temp git repos
@@ -422,6 +425,36 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 **28 Nov 2026: portable Windows exe.** `npm run exe` (`scripts/build-exe.mjs`) makes a Node SEA: the server bundled to CommonJS (SEA entry points must be CJS on Node 22; `import.meta.url` is defined from `__filename`), `dist/web/**` embedded as `web/<path>` assets and served through `AppContext.readStatic`, injected into a copy of `node.exe` with `postject`, icon/version via `rcedit`, PE subsystem patched to GUI (2) so no console window opens. `server/sea.ts` wraps `node:sea`. In the exe: no command means `launch` (double-click), `launch` respawns the exe itself with the explicit `serve` command, settings/data go to `<exe dir>/Notes-data/{settings,data}` when writable (env vars still win), and fatal errors show a message box via hidden PowerShell since there's no console. Size is about 80–120 MB (it's the whole Node runtime). Git is still a system dependency. Not code-signed, so SmartScreen warns once. CLI output from the windowed exe isn't visible in a terminal; use the installer's `notes` or `node dist/server.js` for CLI work. `scripts/test-exe.mjs` (`npm run test:exe`) checks the subsystem byte, launches it, does setup against a local bare repo, creates a note, syncs and checks the push landed, then stops it.
 
 **28 Nov 2026: no CI.** The owner doesn't want GitHub Actions used, for builds or tests, in any project. `.github/workflows/` (ci.yml, release.yml) was removed; testing is manual (`typecheck`, `test`, `test:ui`, `test:exe`), and release files are built locally (`npm run package`; `npm run exe` on Windows). What CI used to cover that now needs the owner's machines: tests on Windows/macOS, real installer runs there, and the Windows exe build.
+
+**Feedback (28 Nov 2026)**
+
+Baseline before changes: typecheck, build and all 74 unit tests pass on the owner's Windows PC (Node 26).
+
+- *Standing preference:* keep the current minimalist interface; change its look only when the owner explicitly asks.
+- *Toggle for underlining/spell check*: already built. The spell check toggle and the 16 themes are in the Appearance pop-out (top right); the owner had missed it and wants no change. No link-underline toggle (no preference given).
+- *16 themes choosable in settings*: already built (Appearance pop-out), as above.
+- *Programming-language highlighting and an "IDE mode"* (change; relaxes the .md/.txt-only folder guard): **decided: light IDE.** Notes mode stays the default; a toggle at the top right switches to IDE mode, which adds syntax highlighting per language (Python, C, C++, JS…), a file-tree sidebar and a git changes/diff panel. No real linters: stays dependency-free and works on the Pi. Code files are allowed in the folder. **Built (28 Nov)**, see below.
+- *Home and Work modes* (change; answers open question 5): **decided:** `Home/` and `Work/` subfolders of the notes root, switched from the sidebar under the "Notes" heading. Existing root notes move into `Home/` in one commit (git keeps their history). Search, daily note, Trash and the quick switcher are scoped to the current mode. **Built (28 Nov)**, see below.
+- *UI tests on Windows* (bug found while testing): `test:ui` only looked for Chrome in Linux/macOS locations, so it never ran on Windows without `CHROME=...`. `tests/ui/chrome.mjs` now also finds Chrome and Edge under Program Files / LocalAppData. Running it on Windows showed two things that were already there before the modes change (checked against the old code): the features test saw brief 409s on `GET /api/notes` and `/api/note` while Settings restarts the runtime (the UI retries; the test now allows them), and the smoke test read files mid-merge (it now waits for the merge to finish).
+
+**28 Nov 2026: Home and Work modes (built).**
+
+- `shared/modes.ts`: a note's mode is its first path segment (`Home/`, `Work/`, matched case-insensitively); anything else counts as Home. Mode choice is per device (`notes-app:mode:v1`), like the layout. Switch: the Home | Work control under "Notes" in the sidebar, or Alt+M.
+- Scoped to the mode: sidebar list, search (`?mode=`), quick switcher, daily note (each mode has its own), new notes (`POST /api/notes {mode}`, default Home), Trash dialog (Empty Trash only empties this mode's). Not scoped: open panes stay open when switching; wiki links resolve in the current mode first, then the other; the conflict banner lists both modes.
+- **Moving existing notes:** at startup `NotesRuntime` moves notes outside both folders into `Home/` (`NoteStore.moveIntoModes`, under the worktree lock), and the next sync commits it (git sees renames; `--follow` history works). Only when there's something to move, it syncs first (max 15 s) so other machines' edits at the old paths are moved too.
+- Merges run with `-X no-renames`, so a machine that moved before pulling another machine's edit to `a.md` gets `a.md` back at the root beside a stale `Home/a.md`. On the next move: same bytes → the root file is removed; `Home/` copy is an earlier version of the root file in git history (`isEarlierVersion`) → the newer text replaces it; otherwise both were edited → the root file becomes a conflict copy in `Home/` (shows in the banner). Until the next start such a note shows in Home at its root path. Tests: `tests/sync/modes.test.ts`.
+- Reads and saves at a note's old root path go to `Home/<path>` when the root file is gone (`NoteStore.followMove`; the response's `path` says so), so a tab left open across the update, the unsaved-text stash and offline clients never recreate a moved note at the root. The UI also repoints restored panes on boot.
+
+**28 Nov 2026: IDE mode (built).**
+
+- Toggle: the `</>` button in the top bar, left of Appearance; per device (`notes-app:ide:v1`). Notes mode is unchanged and stays the default.
+- **Which files:** `shared/files.ts` is the one list, by extension (`CODE_LANGUAGES`: Python, C/C++, JS/TS, JSON, Rust, Java, Go, SQL, YAML, HTML, CSS, shell, PowerShell, TOML, Lua, plus plain-text types like `.txt`, `.csv`, `.ini`). No extensionless files (Makefile etc.): conflict copies need an extension. Code files over 2 MB, hidden folders and `node_modules`/`__pycache__`/`venv`/`target` are never listed, opened or written. Everything else (images, Office files, PDFs) stays refused, and first-run setup still refuses folders holding those.
+- **Server:** `NoteStore` tracks notes and code files together (watcher events, baseHash conflict copies and Trash all work the same; a code conflict copy keeps its extension, e.g. `main (conflict … A).py`). `list()`, search and backlinks stay notes-only; `files()` is everything. Code files are not moved into `Home/` (moving a project could break it); at the root they show under Home. New endpoints: `/api/files` (GET, POST), `/api/git/changes`, `/api/git/commits`, `/api/git/file` (docs/API.md). Git is read through `Git.run` in `NotesRuntime` as before.
+- **UI:** the sidebar swaps search + note list for an Explorer with Files (tree of the current mode's folder) and Changes (files not committed yet, then recent commits; each file opens a line diff, `web/ui/diffview.ts`). `+` asks for a file path inside the mode folder. Ctrl+P searches files as well as notes. Code panes: language-specific highlighting (`web/editor/languages.ts`, CodeMirror language packages, colours from theme variables), monospace, full width, no wrapping, line numbers always, spell check off, language name in the pane header. Code fences in notes (```` ```python ````) are highlighted in both modes.
+- **Changes vs sync:** with sync on, saves are committed within seconds, so "Not synced yet" is usually empty for long and "Recent commits" is the useful part. With sync off there are no commits (same as History).
+- Bundle: the language parsers take `dist/web/app.js` from about 650 KB to 1.0 MB (served gzipped). Server still has no runtime dependencies; the language packages are dev dependencies bundled into the web UI.
+- Not built (the owner chose the light version): linters, running code, a terminal, renaming/moving files from the tree, folder creation other than by typing a path.
+- "Never put source code in `Brynkr/notes`" means this app's source. The owner's own code in IDE mode is fine.
 
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 

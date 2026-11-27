@@ -17,9 +17,10 @@ Raspberry Pi (web UI + API) ──────git───┘
 - Base URL: `http://<pi-address>:4747` (port configurable).
 - **Auth:** when a password is set (required when listening on the network), send HTTP Basic auth on every request. The username is ignored.
 - **Mutating requests** (`POST`, `PUT`, `DELETE`) must send the header `X-Notes-App: 1`. Bodies are JSON (`Content-Type: application/json`).
-- **Paths** are relative to the notes folder, use `/`, end in `.md`, and can't contain `..` or hidden segments. URL-encode them in query strings.
+- **Paths** are relative to the notes folder, use `/`, and can't contain `..` or hidden segments. URL-encode them in query strings. Notes end in `.md`. The note endpoints (`GET`/`PUT`/`DELETE /api/note`, history) also accept the text and code files that IDE mode opens, chosen by extension: `.py`, `.c`, `.cpp`, `.h`, `.js`, `.ts`, `.json`, `.rs`, `.go`, `.java`, `.sql`, `.yaml`, `.html`, `.css`, `.sh`, `.ps1`, `.toml`, `.lua`, `.txt` and a few more (the full list is `CODE_LANGUAGES` in `shared/files.ts`). Anything else is refused with `400`. `GET /api/notes` and search only ever return notes.
 - **Hashes** are lowercase hex SHA-256 of the file's exact bytes. They identify a version of a note.
 - Errors: JSON `{ "error": "message" }` with status `400` (bad input), `401` (password), `403` (missing header), `404` (no such note), `409` (changed since you saw it), `413` (note over 2 MB), `429` (too many wrong passwords; see `Retry-After`), `5xx`.
+- **Home and Work:** notes live in two top-level folders, `Home/` and `Work/` (the app's two modes). A note's mode is its first path segment, matched case-insensitively; anything else counts as Home. At startup the server moves notes outside both folders into `Home/` (keeping subfolders). A read or save at a note's old pre-`Home/` path is served from, and written to, its new place, and the response's `path` says where it now is. So an offline client that last saw `x.md` keeps working. Switch to the new path when you see it.
 - **Trash:** deleting a note moves it to `.trash/` inside the notes folder, which syncs like everything else, so a client should treat a note that disappeared from `/api/notes` as deleted.
 
 ## Endpoints
@@ -28,10 +29,10 @@ Raspberry Pi (web UI + API) ──────git───┘
 | --- | --- | --- |
 | `GET /api/info` | | `{ machineName, repoPath, notesDir, remote, branch, version }` |
 | `GET /api/status` | | sync status (see below) |
-| `GET /api/notes` | | `NoteMeta[]`, newest first |
-| `GET /api/note?path=P` | | `{ path, text, hash }` |
-| `PUT /api/note` | `{ path, text, baseHash }` | `{ hash, conflictCopy? }` |
-| `POST /api/notes` | `{ title }` | `{ path, text, hash }` (server picks the filename) |
+| `GET /api/notes[?mode=home\|work]` | | `NoteMeta[]`, newest first; optionally only one mode |
+| `GET /api/note?path=P` | | `{ path, text, hash }` (`path` is where the note is now; see Home and Work) |
+| `PUT /api/note` | `{ path, text, baseHash }` | `{ hash, conflictCopy?, path? }`; `path` is set when the note had moved into `Home/` and was saved there |
+| `POST /api/notes` | `{ title, mode? }` | `{ path, text, hash }` (server picks the filename, in `Home/` or `Work/`; `mode` defaults to `"home"`) |
 | `DELETE /api/note?path=P[&hash=H]` | | moves the note to the Trash: `{ ok: true, trashPath }`, or `409` if `hash` given and the note changed |
 | `GET /api/trash` | | `[{ path, title, deletedMs, size }]`, most recently deleted first |
 | `GET /api/trash/note?path=P` | | `{ path, text }` of a note in the Trash |
@@ -40,7 +41,12 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `POST /api/trash/empty` | `{}` | `{ count }` |
 | `GET /api/history?path=P` | | `[{ commit, timeMs, machine, message, file }]`: synced versions, newest first |
 | `GET /api/history/version?commit=C&file=F` | | `{ text }` of that version (`file` as returned by history) |
-| `GET /api/search?q=Q` | | `[{ path, title, snippet }]`; `snippet` is plain text (Markdown stripped) with matches wrapped in `\u0001`…`\u0002` |
+| `GET /api/files[?mode=home\|work]` | | `NoteMeta[]` plus `size`, for notes and text/code files, sorted by path (IDE mode's file tree; a code file's `title` is its filename) |
+| `POST /api/files` | `{ path }` | `{ path, text: "", hash }`: a new empty file at that path; `409` if it exists, `400` if the type isn't allowed |
+| `GET /api/git/changes[?mode=home\|work]` | | `[{ path, status }]`: files changed since the last commit; `status` is `A`, `M` or `D` |
+| `GET /api/git/commits[?mode=home\|work&limit=N]` | | `[{ commit, parent, timeMs, machine, message, files: [{ path, status }] }]`: recent commits touching the notes folder, newest first (default 50) |
+| `GET /api/git/file?commit=C&path=P` | | `{ text }` of P at commit C (a hash or `HEAD`); `404` if it wasn't there |
+| `GET /api/search?q=Q[&mode=home\|work]` | | `[{ path, title, snippet }]`, optionally only one mode; `snippet` is plain text (Markdown stripped) with matches wrapped in `\u0001`…`\u0002` |
 | `GET /api/backlinks?path=P` | | `[{ path, title, context }]`: notes that `[[link]]` to P, with the linking line |
 | `POST /api/sync` | `{}` | runs a git sync now (waits for it), returns sync status |
 | `GET /api/events` | | Server-Sent Events stream (see below) |
@@ -50,7 +56,7 @@ The web UI also uses `GET/PUT /api/settings`, `POST /api/settings/test-remote`, 
 `NoteMeta`:
 
 ```json
-{ "path": "20261127-091500-shopping.md", "title": "Shopping", "modifiedMs": 1795700000000,
+{ "path": "Home/20261127-091500-shopping.md", "title": "Shopping", "modifiedMs": 1795700000000,
   "tags": ["home"], "conflict": false, "hash": "3fd3…" }
 ```
 
@@ -99,7 +105,7 @@ Run this when the device gets wifi, and when a note is opened while online:
 4. **Pull.** `GET /api/notes`. For every server note whose `hash` differs from the local `baseHash` (or that isn't local yet): `GET /api/note?path=…`, store `text`, and set `baseHash = hash`. A note that's local and clean but missing from the server list was deleted elsewhere: remove it locally.
 5. Optionally `POST /api/sync` again so the Pi pushes to GitHub right away. Otherwise it does that within about 8 seconds on its own.
 
-**New notes made offline:** pick the filename yourself, `YYYYMMDD-HHMMSS-slug.md` in local time, slug lowercase `a-z0-9-` (max 50 chars, `untitled` if empty). Save with `PUT` and `baseHash: null`. Start the text with `# Title`, which the app uses as the title.
+**New notes made offline:** pick the filename yourself, `Home/` or `Work/` followed by `YYYYMMDD-HHMMSS-slug.md` in local time, slug lowercase `a-z0-9-` (max 50 chars, `untitled` if empty). Save with `PUT` and `baseHash: null`. Start the text with `# Title`, which the app uses as the title.
 
 A note that is edited on the Kindle, and also somewhere else before the Kindle syncs, ends up as the Kindle's text in the note plus a conflict copy holding the other text. That matches what git sync does between desktops.
 

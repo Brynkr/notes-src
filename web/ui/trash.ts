@@ -1,6 +1,7 @@
 // Trash dialog: notes moved to the Trash, with preview, restore and delete forever.
 
 import type { TrashItem } from "../../shared/types.ts";
+import { inMode, MODE_LABEL, pathInMode, type Mode } from "../../shared/modes.ts";
 import { api } from "../api.ts";
 import { h, icons, relativeTime, toast } from "./dom.ts";
 
@@ -12,10 +13,14 @@ export class TrashDialog {
   private openPreview: string | null = null;
   private readonly onRestored: (path: string) => void;
   private readonly onClosed: () => void;
+  private readonly mode: () => Mode;
+  private readonly heading: HTMLElement;
 
-  constructor(opts: { onRestored: (path: string) => void; onClosed: () => void }) {
+  constructor(opts: { onRestored: (path: string) => void; onClosed: () => void; mode: () => Mode }) {
     this.onRestored = opts.onRestored;
     this.onClosed = opts.onClosed;
+    this.mode = opts.mode;
+    this.heading = h("h2", {}, "Trash");
     this.list = h("div", { class: "trash-list" });
     this.emptyBtn = armed(h("button", { type: "button", class: "btn" }, "Empty Trash"), "Delete all forever?", () => this.emptyAll());
     const panel = h(
@@ -28,7 +33,7 @@ export class TrashDialog {
           if (e.key === "Escape") this.close();
         },
       },
-      h("header", { class: "dialog-head" }, h("h2", {}, "Trash"), h("button", { type: "button", class: "icon-btn", "aria-label": "Close", html: icons.close, onclick: () => this.close() })),
+      h("header", { class: "dialog-head" }, this.heading, h("button", { type: "button", class: "icon-btn", "aria-label": "Close", html: icons.close, onclick: () => this.close() })),
       h("div", { class: "dialog-body" }, h("p", { class: "muted trash-intro" }, "Deleted notes wait here, on every device, until you restore them or delete them forever. Even then, they stay in the repository's git history."), this.list),
       h("footer", { class: "dialog-foot" }, this.emptyBtn, h("span", { class: "spacer" }), h("button", { type: "button", class: "btn", onclick: () => this.close() }, "Close")),
     );
@@ -43,6 +48,7 @@ export class TrashDialog {
     this.el.hidden = false;
     this.openPreview = null;
     this.emptyBtn.hidden = true;
+    this.heading.textContent = `Trash · ${MODE_LABEL[this.mode()]}`;
     this.list.replaceChildren(h("p", { class: "muted" }, "Loading…"));
     await this.reload();
     this.el.querySelector<HTMLElement>(".dialog-head .icon-btn")?.focus();
@@ -56,7 +62,8 @@ export class TrashDialog {
 
   private async reload(): Promise<void> {
     try {
-      this.items = await api.trash();
+      const mode = this.mode();
+      this.items = (await api.trash()).filter((t) => inMode(t.path, mode));
     } catch (err) {
       this.list.replaceChildren(h("p", { class: "bad" }, `Couldn't load the Trash: ${(err as Error).message}`));
       return;
@@ -90,7 +97,7 @@ export class TrashDialog {
               },
             },
             h("span", { class: "note-title" }, item.title),
-            h("span", { class: "note-sub" }, `Deleted ${relativeTime(item.deletedMs)} · ${item.path}`),
+            h("span", { class: "note-sub" }, `Deleted ${relativeTime(item.deletedMs)} · ${pathInMode(item.path)}`),
           ),
           h(
             "div",
@@ -133,9 +140,14 @@ export class TrashDialog {
     }
   }
 
+  /** Empties this mode's Trash only; the other mode's deleted notes stay. */
   private async emptyAll(): Promise<void> {
     try {
-      const { count } = await api.emptyTrash();
+      let count = 0;
+      for (const item of this.items) {
+        await api.purgeTrash(item.path);
+        count++;
+      }
       toast(`Deleted ${count} note${count === 1 ? "" : "s"} forever.`, "info");
       await this.reload();
     } catch (err) {

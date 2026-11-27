@@ -7,12 +7,14 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { HistoryEntry, ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import type { ChangeEntry, CommitEntry, HistoryEntry, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 import { dataDir, type Config } from "./config.ts";
 import { Git, Queue } from "./git.ts";
 import { NoteStore } from "./notes.ts";
+import { inMode, modeFolderOf, type Mode } from "../shared/modes.ts";
+import { isNotePath, isTextFile } from "../shared/files.ts";
 import { SearchIndex } from "./search.ts";
-import { SyncEngine, SyncScheduler } from "./sync.ts";
+import { isEarlierVersion, SyncEngine, SyncScheduler } from "./sync.ts";
 import { NoteWatcher } from "./watcher.ts";
 
 export const DEFAULT_GITIGNORE = `# Written by notes-app. Edit freely.
@@ -45,6 +47,13 @@ export interface RuntimeEvents {
   event: [ServerEvent];
 }
 
+// Separators in git's -z / --format output (written as char codes to keep this file plain ASCII text).
+const NUL = String.fromCharCode(0);
+const LF = String.fromCharCode(10);
+const TAB = String.fromCharCode(9);
+const RS = String.fromCharCode(0x1e);
+const US = String.fromCharCode(0x1f);
+
 export class NotesRuntime extends EventEmitter<RuntimeEvents> {
   readonly cfg: Config;
   readonly repoRoot: string;
@@ -76,14 +85,39 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
     const repoRoot = await ensureRepo(cfg);
     const rt = new NotesRuntime(cfg, repoRoot);
     fs.mkdirSync(rt.notesRoot, { recursive: true });
+    const moved = await rt.moveIntoModes();
     await rt.store.scan();
     const indexed = rt.search.indexed();
     for (const [p, k] of rt.store.known) if (indexed.get(p) !== k.hash) rt.reindex(p);
     for (const p of indexed.keys()) if (!rt.store.known.has(p)) rt.search.remove(p);
     rt.wire();
     rt.watcher.start();
-    if (cfg.sync) rt.scheduler.start();
+    if (cfg.sync) {
+      rt.scheduler.start();
+      if (moved.length) rt.scheduler.noteSaved(); // commit the moves soon
+    }
     return rt;
+  }
+
+  /**
+   * Move notes outside Home/ and Work/ into Home/. The first time (when there
+   * are any), pull first so edits other machines made at the old paths are
+   * moved too rather than arriving later beside a stale copy. That pull waits
+   * at most 15 s, so an offline start isn't held up for long.
+   */
+  private async moveIntoModes(): Promise<[string, string][]> {
+    const outside = (await this.store.walk()).some((p) => !modeFolderOf(p));
+    if (!outside) return [];
+    if (this.cfg.sync) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.engine.request().catch(() => undefined),
+        new Promise((r) => (timer = setTimeout(r, 15_000))),
+      ]);
+      clearTimeout(timer);
+    }
+    const prefix = path.relative(this.repoRoot, this.notesRoot).split(path.sep).join("/");
+    return this.store.moveIntoModes((rel, homeAbs) => isEarlierVersion(this.git, prefix ? `${prefix}/${rel}` : rel, homeAbs));
   }
 
   private emitEvent(ev: ServerEvent): void {
@@ -117,6 +151,7 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
   }
 
   reindex(p: string): void {
+    if (!isNotePath(p)) return; // search covers notes only
     const k = this.store.known.get(p);
     if (!k) return this.search.remove(p);
     try {
@@ -165,7 +200,7 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
     );
     if (r.code !== 0) return []; // no commits yet
     const out: HistoryEntry[] = [];
-    for (const rec of r.stdout.split("\x1e").filter((x) => x.trim())) {
+    for (const rec of r.stdout.split(RS).filter((x) => x.trim())) {
       // "-z" ends the header with NUL (or newline, depending on git version); then the file name.
       const parts = rec.split(/[\0\n]/).map((x) => x.trim()).filter(Boolean);
       const [commit, at, message] = (parts[0] ?? "").split("\x1f");
@@ -179,9 +214,78 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
   /** A note's text at a given commit. */
   async version(commit: string, file: string): Promise<string> {
     if (!/^[0-9a-f]{7,64}$/.test(commit)) throw new Error("Bad commit id");
-    if (!/\.(md|markdown)$/i.test(file) || file.split("/").some((s) => s === ".." || s === "") || file.includes("\0")) throw new Error("Bad path");
+    if (!isTextFile(file) || file.split("/").some((s) => s === ".." || s === "") || file.includes("\0")) throw new Error("Bad path");
     const r = await this.git.run(["cat-file", "blob", `${commit}:${file}`], { binary: true, allowFail: true });
     if (r.code !== 0) throw new Error("That version isn't available.");
+    return Buffer.from(r.stdout, "latin1").toString("utf8");
+  }
+
+  /** Notes-root-relative path → repo-relative path, and back (null if outside the notes root or hidden). */
+  private get notesPrefix(): string {
+    return path.relative(this.repoRoot, this.notesRoot).split(path.sep).join("/");
+  }
+  private fromRepo(repoPath: string): string | null {
+    const prefix = this.notesPrefix ? this.notesPrefix + "/" : "";
+    if (!repoPath.startsWith(prefix)) return null;
+    const rel = repoPath.slice(prefix.length);
+    if (!rel || rel.split("/").some((s) => s.startsWith(".")) || !isTextFile(rel)) return null;
+    return rel;
+  }
+
+  /**
+   * Files changed since the last commit (IDE mode's Changes panel). With sync
+   * on this is usually empty for long: auto-commits follow saves within seconds.
+   */
+  async changes(mode: Mode | null): Promise<ChangeEntry[]> {
+    const r = await this.git.run(["-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--", this.notesPrefix || "."], { allowFail: true });
+    if (r.code !== 0) return [];
+    const out: ChangeEntry[] = [];
+    for (const entry of r.stdout.split(NUL)) {
+      if (entry.length < 4) continue;
+      const xy = entry.slice(0, 2);
+      const rel = this.fromRepo(entry.slice(3));
+      if (!rel || (mode && !inMode(rel, mode))) continue;
+      const status = xy === "??" ? "A" : (xy.trim()[0] as ChangeEntry["status"]);
+      out.push({ path: rel, status: status === "A" || status === "D" ? status : "M" });
+    }
+    return out.sort((a, b) => (a.path < b.path ? -1 : 1));
+  }
+
+  /** Recent commits touching the notes folder, with the files each changed. */
+  async commits(mode: Mode | null, limit = 50): Promise<CommitEntry[]> {
+    const r = await this.git.run(
+      ["-c", "core.quotepath=false", "log", `-n${Math.max(1, Math.min(500, limit))}`, "--no-renames", "--name-status", "--format=%x1e%H%x1f%P%x1f%at%x1f%s", "--", this.notesPrefix || "."],
+      { allowFail: true },
+    );
+    if (r.code !== 0) return []; // no commits yet
+    const out: CommitEntry[] = [];
+    for (const rec of r.stdout.split(RS)) {
+      const lines = rec.split(LF).filter((l) => l.trim());
+      if (!lines.length) continue;
+      const [commit, parents, at, message] = lines[0].split(US);
+      const files: ChangeEntry[] = [];
+      for (const line of lines.slice(1)) {
+        const tab = line.indexOf(TAB);
+        if (tab < 0) continue;
+        const rel = this.fromRepo(line.slice(tab + 1));
+        if (!rel || (mode && !inMode(rel, mode))) continue;
+        const st = line[0];
+        files.push({ path: rel, status: st === "A" || st === "D" ? st : "M" });
+      }
+      if (!files.length) continue;
+      const m = /^auto: \S+ (.+?)(?: \(kept .*\))?$/.exec(message ?? "");
+      out.push({ commit, parent: parents?.split(" ")[0] || null, timeMs: Number(at) * 1000, machine: m ? m[1] : null, message: message ?? "", files });
+    }
+    return out;
+  }
+
+  /** A file's text at a commit, by notes-root-relative path; null if it didn't exist there. */
+  async fileAt(commit: string, rel: string): Promise<string | null> {
+    if (!/^([0-9a-f]{7,64}|HEAD)$/.test(commit)) throw new Error("Bad commit id");
+    this.store.resolve(rel); // validates the path
+    const file = this.notesPrefix ? `${this.notesPrefix}/${rel}` : rel;
+    const r = await this.git.run(["cat-file", "blob", `${commit}:${file}`], { binary: true, allowFail: true });
+    if (r.code !== 0) return null;
     return Buffer.from(r.stdout, "latin1").toString("utf8");
   }
 

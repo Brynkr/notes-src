@@ -1,6 +1,8 @@
 // Thin client for the server's HTTP API.
 
 import type {
+  ChangeEntry,
+  CommitEntry,
   AppInfo,
   Backlink,
   NoteContent,
@@ -18,6 +20,7 @@ import type {
   SyncStatusDto,
   TrashItem,
 } from "../shared/types.ts";
+import type { Mode } from "../shared/modes.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -61,7 +64,7 @@ export const api = {
   list: () => call<NoteMeta[]>("GET", "/api/notes"),
   read: (path: string) => call<NoteContent>("GET", `/api/note?path=${q(path)}`),
   save: (req: SaveRequest, keepalive = false) => call<SaveResponse>("PUT", "/api/note", req, { keepalive }),
-  create: (title: string) => call<NoteContent>("POST", "/api/notes", { title }),
+  create: (title: string, mode: Mode) => call<NoteContent>("POST", "/api/notes", { title, mode }),
   /** Moves the note to the Trash. */
   remove: (path: string) => call<{ ok: true; trashPath: string }>("DELETE", `/api/note?path=${q(path)}`),
   history: (path: string) => call<HistoryEntry[]>("GET", `/api/history?path=${q(path)}`),
@@ -72,7 +75,14 @@ export const api = {
   purgeTrash: (path: string) => call<{ ok: true }>("DELETE", `/api/trash?path=${q(path)}`),
   emptyTrash: () => call<{ count: number }>("POST", "/api/trash/empty", {}),
   backlinks: (path: string) => call<Backlink[]>("GET", `/api/backlinks?path=${q(path)}`),
-  search: (query: string) => call<SearchHit[]>("GET", `/api/search?q=${q(query)}`),
+  /** Notes and text/code files (IDE mode), sorted by path. */
+  files: (mode: Mode) => call<(NoteMeta & { size: number })[]>("GET", `/api/files?mode=${mode}`),
+  createFile: (path: string) => call<NoteContent>("POST", "/api/files", { path }),
+  gitChanges: (mode: Mode) => call<ChangeEntry[]>("GET", `/api/git/changes?mode=${mode}`),
+  gitCommits: (mode: Mode, limit = 50) => call<CommitEntry[]>("GET", `/api/git/commits?mode=${mode}&limit=${limit}`),
+  /** A file's text at a commit ("HEAD" or a hash); 404 if it wasn't there. */
+  gitFile: (commit: string, path: string) => call<{ text: string }>("GET", `/api/git/file?commit=${q(commit)}&path=${q(path)}`),
+  search: (query: string, mode: Mode) => call<SearchHit[]>("GET", `/api/search?q=${q(query)}&mode=${mode}`),
   sync: () => call<SyncStatusDto>("POST", "/api/sync", {}),
   focus: () => call<{ ok: true }>("POST", "/api/focus", {}),
   settings: () => call<SettingsDto>("GET", "/api/settings"),

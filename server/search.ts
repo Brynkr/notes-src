@@ -109,7 +109,8 @@ export class SearchIndex {
     this.db.prepare("DELETE FROM files WHERE id = ?").run(row.id);
   }
 
-  search(query: string, limit = 50): SearchHit[] {
+  /** Ranked hits; `keep` narrows them by path (e.g. to one mode) before the limit applies. */
+  search(query: string, keep?: (path: string) => boolean, limit = 50): SearchHit[] {
     const match = toFtsQuery(query);
     if (!match) return [];
     const rows = this.db
@@ -121,8 +122,8 @@ export class SearchIndex {
          ORDER BY bm25(fts, 8.0, 1.0)
          LIMIT ?`,
       )
-      .all(MARK_START, MARK_END, match, limit) as unknown as SearchHit[];
-    return rows.map((r) => ({ ...r, snippet: cleanSnippet(r.snippet) }));
+      .all(MARK_START, MARK_END, match, keep ? 5000 : limit) as unknown as SearchHit[];
+    return (keep ? rows.filter((r) => keep(r.path)).slice(0, limit) : rows).map((r) => ({ ...r, snippet: cleanSnippet(r.snippet) }));
   }
 
   /** Notes containing a wiki link to any of `keys` (see keysForNote), with the linking line. */

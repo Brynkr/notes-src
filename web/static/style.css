@@ -159,6 +159,10 @@ button { font: inherit; color: inherit; }
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.mode-switch { margin: 2px 10px 6px; }
+/* Quieter than the Appearance panel's segmented controls: no accent fill. */
+.segmented.mode-switch button { padding: 4px; font-size: 12.5px; color: var(--muted); }
+.segmented.mode-switch button[aria-pressed="true"] { background: var(--bg); color: var(--ink); font-weight: 600; }
 .search-wrap { position: relative; margin: 4px 10px 8px; }
 .search-icon { position: absolute; left: 9px; top: 7px; color: var(--faint); pointer-events: none; }
 .search-input, .new-input {
@@ -842,3 +846,52 @@ button { font: inherit; color: inherit; }
 .app.narrow .goto kbd { display: none; }
 .app.narrow .appearance-anchor { position: static; }
 .app.narrow .appearance-panel { position: fixed; top: 48px; left: 8px; right: 8px; width: auto; max-height: calc(100dvh - 64px); }
+
+/* --- IDE mode: file tree, changes, code panes ---------------------------- */
+.ide-btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.explorer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.explorer[hidden] { display: none; }
+.explorer-tabs { margin-top: 0; }
+.tree, .changes { flex: 1; overflow-y: auto; padding: 2px 6px 10px; }
+.tree[hidden], .changes[hidden] { display: none; }
+.tree-row, .commit-row, .change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 8px 3px calc(8px + var(--depth, 0) * 14px);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.tree-row:hover, .commit-row:hover, .change-row:hover { background: var(--panel-2); }
+.tree-row.active { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
+.tree-row.is-conflict .tree-name { color: var(--warn); }
+.tree-row:focus-visible, .commit-row:focus-visible, .change-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tree-chevron { flex: none; width: 10px; color: var(--faint); font-size: 14px; line-height: 1; transition: transform 0.12s; }
+.tree-chevron.open { transform: rotate(90deg); }
+.tree-icon { flex: none; display: inline-flex; color: var(--muted); }
+.tree-icon svg { width: 14px; height: 14px; }
+.tree-name, .change-path, .commit-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-dir .tree-name { color: var(--muted); }
+.changes-head { margin: 10px 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.changes-empty { margin: 2px 8px 6px; font-size: 12.5px; color: var(--muted); }
+.commit-label { flex: 1; }
+.commit-meta { flex: none; font-size: 11.5px; color: var(--faint); }
+.change-row { padding-left: 26px; }
+.change-status { flex: none; width: 1.2em; font: 600 11.5px var(--mono); text-align: center; }
+.change-status.st-A { color: var(--ok); }
+.change-status.st-M { color: var(--warn); }
+.change-status.st-D { color: var(--bad); }
+.pane-lang { flex: none; margin-right: 6px; font-size: 11.5px; color: var(--faint); }
+.pane-lang[hidden] { display: none; }
+.diff-titles { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.diff-titles h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-sub { font-size: 12.5px; }
+.diff-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 0; border-bottom: 1px solid var(--line); }

@@ -139,7 +139,7 @@ export class HistoryDialog {
 
 // --- line diff -------------------------------------------------------------------
 
-function renderDiff(current: string, version: string): HTMLElement {
+export function renderDiff(current: string, version: string): HTMLElement {
   const ops = lineDiff(current, version);
   const out = h("div", { class: "diff" });
   const CONTEXT = 3;

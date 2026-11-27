@@ -45,9 +45,15 @@ describe("validation", () => {
     fs.mkdirSync(path.join(d, "sub"));
     fs.writeFileSync(path.join(d, "sub", "b.txt"), "");
     fs.writeFileSync(path.join(d, ".DS_Store"), "");
+    // Code is fine too (IDE mode), and dependency caches are ignored.
+    fs.writeFileSync(path.join(d, "sub", "main.py"), "");
+    fs.writeFileSync(path.join(d, "sub", "driver.c"), "");
+    fs.mkdirSync(path.join(d, "sub", "node_modules", "x"), { recursive: true });
+    fs.writeFileSync(path.join(d, "sub", "node_modules", "x", "logo.png"), "");
     assert.deepEqual(nonNoteFiles(d), []);
     fs.writeFileSync(path.join(d, "sub", "tax-return.pdf"), "");
-    assert.deepEqual(nonNoteFiles(d), ["sub/tax-return.pdf"]);
+    fs.writeFileSync(path.join(d, "budget.xlsx"), "");
+    assert.deepEqual(nonNoteFiles(d).sort(), ["budget.xlsx", "sub/tax-return.pdf"]);
   });
 });
 

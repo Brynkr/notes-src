@@ -418,6 +418,24 @@ export async function conflictCopyName(repoRoot: string, p: string, date: string
 }
 
 /**
+ * True if the file at `abs` holds exactly a version that `repoRel` had at
+ * some point in git history (so it's an older copy, not separate edits).
+ * Used when moving notes into Home/ finds a different copy already there.
+ */
+export async function isEarlierVersion(git: Git, repoRel: string, abs: string): Promise<boolean> {
+  const blob = await git.run(["hash-object", "--", abs], { allowFail: true });
+  if (blob.code !== 0) return false;
+  const id = blob.stdout.trim();
+  const log = await git.run(["log", "--no-renames", "--raw", "--no-abbrev", "--format=", "--", repoRel], { allowFail: true });
+  if (log.code !== 0) return false;
+  // Lines look like ":100644 100644 <old blob> <new blob> M\tpath".
+  return log.stdout.split("\n").some((line) => {
+    const f = line.split(/\s+/);
+    return line.startsWith(":") && (f[2] === id || f[3] === id);
+  });
+}
+
+/**
  * When to sync (HANDOVER 10.1): after saves once idle, on a timer, on focus
  * (rate limited), on demand, and once at shutdown with a timeout.
  */
