@@ -8,12 +8,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { CHROME } from "./chrome.mjs";
+import { noteFiles } from "./files.mjs";
 
-const CHROME =
-  process.env.CHROME ??
-  ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((p) =>
-    fs.existsSync(p),
-  );
 const SHOTS = process.env.SHOTS ?? path.resolve("tests/ui/screenshots");
 const PORT = 4799;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "notes-ui-"));
@@ -81,7 +78,7 @@ const clickSafe = async (selector) => {
     }
   }
 };
-const files = () => fs.readdirSync(desk).filter((f) => f.endsWith(".md")).sort();
+const files = () => noteFiles(desk);
 
 try {
   page = await browser.newPage();
@@ -94,6 +91,7 @@ try {
   await step("opens the most recent note and shows sync state", async () => {
     await page.waitForSelector(".cm-content");
     assert.match(await editorText(), /This note came from the repo/);
+    assert.deepEqual(files(), ["Home/20261120-090000-welcome.md"], "the root note was moved into Home/ at startup");
     await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).startsWith("Synced"), "synced label");
   });
 
@@ -112,7 +110,7 @@ try {
     await page.keyboard.up("Control");
     await page.keyboard.type("- eggs\ncoffee"); // Enter continues the list by itself
     notePath = await waitFor(() => files().find((f) => f.endsWith("-shopping-list.md")), "file on disk");
-    assert.match(notePath, /^\d{8}-\d{6}-shopping-list\.md$/);
+    assert.match(notePath, /^Home\/\d{8}-\d{6}-shopping-list\.md$/);
     await waitFor(() => fs.readFileSync(path.join(desk, notePath), "utf8").includes("- coffee"), "autosave");
     assert.equal(fs.readFileSync(path.join(desk, notePath), "utf8"), "# Shopping list\n\n- eggs\n- coffee");
     await shot("1-editor");
@@ -120,7 +118,7 @@ try {
 
   await step("Sync now pushes to the remote", async () => {
     await page.click(".sync .icon-btn");
-    await waitFor(() => git(remote, "ls-tree", "--name-only", "main").includes(notePath), "push");
+    await waitFor(() => git(remote, "ls-tree", "-r", "--name-only", "main").includes(notePath), "push");
   });
 
   await step("a change from another machine reloads the clean buffer", async () => {
@@ -182,9 +180,11 @@ try {
     await waitFor(() => fs.readFileSync(path.join(desk, notePath), "utf8").includes("DESK VERSION"), "save");
     await page.click(".sync .icon-btn");
     await waitFor(() => files().some((f) => f.includes("(conflict ") && f.includes("laptop")), "merge conflict copy");
-    for (const f of files()) assert.doesNotMatch(fs.readFileSync(path.join(desk, f), "utf8"), /^<<<<<<< /m, f);
-    assert.match(await editorText(), /DESK VERSION/);
+    // Check the files once the merge has finished (git rewrites them while resolving).
     await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).includes("conflict"), "conflict label");
+    for (const f of files()) assert.doesNotMatch(fs.readFileSync(path.join(desk, f), "utf8"), /^<<<<<<< /m, f);
+    assert.match(fs.readFileSync(path.join(desk, notePath), "utf8"), /DESK VERSION/);
+    assert.match(await editorText(), /DESK VERSION/);
     await page.click(".banner .chip");
     const allText = () => page.$$eval(".pane .cm-content", (els) => els.map((e) => e.innerText).join("\n---\n"));
     await waitFor(async () => (await allText()).includes("OTHER MACHINE VERSION"), "copy opened beside the original");
@@ -271,5 +271,5 @@ try {
   await browser.close();
   server.kill("SIGTERM");
   await sleep(300);
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: the browser may still hold files for a moment
 }

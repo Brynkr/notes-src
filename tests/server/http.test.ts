@@ -70,7 +70,7 @@ describe("HTTP API", () => {
 
   test("create, save, list, read, delete", async () => {
     const created = await (await fetch(`${s.base}/api/notes`, { method: "POST", headers: H, body: JSON.stringify({ title: "Hi" }) })).json();
-    assert.match(created.path, /^\d{8}-\d{6}-hi\.md$/);
+    assert.match(created.path, /^Home\/\d{8}-\d{6}-hi\.md$/, "new notes go to Home/ unless a mode is given");
     const save = await fetch(`${s.base}/api/note`, {
       method: "PUT",
       headers: H,
@@ -92,6 +92,33 @@ describe("HTTP API", () => {
     const r = await fetch(`${s.base}/api/note?path=${encodeURIComponent(n.path)}&hash=${n.hash}`, { method: "DELETE", headers: H });
     assert.equal(r.status, 409);
     assert.equal((await fetch(`${s.base}/api/note?path=${encodeURIComponent(n.path)}`)).status, 200);
+  });
+
+  test("modes: POST with a mode, list filtered by mode, bad mode refused", async () => {
+    const post = (body: unknown) => fetch(`${s.base}/api/notes`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    const w = await (await post({ title: "Standup", mode: "work" })).json();
+    assert.match(w.path, /^Work\//);
+    const hm = await (await post({ title: "Groceries", mode: "home" })).json();
+    assert.match(hm.path, /^Home\//);
+    assert.equal((await post({ title: "x", mode: "play" })).status, 400);
+    const work = (await (await fetch(`${s.base}/api/notes?mode=work`)).json()) as { path: string }[];
+    assert.ok(work.some((n) => n.path === w.path));
+    assert.ok(work.every((n) => n.path.startsWith("Work/")));
+    const home = (await (await fetch(`${s.base}/api/notes?mode=home`)).json()) as { path: string }[];
+    assert.ok(home.some((n) => n.path === hm.path) && !home.some((n) => n.path === w.path));
+    assert.equal((await fetch(`${s.base}/api/notes?mode=play`)).status, 400);
+    assert.equal((await fetch(`${s.base}/api/search?q=x&mode=play`)).status, 400);
+  });
+
+  test("a save to a note's pre-Home/ path lands in Home/ and says so", async () => {
+    fs.mkdirSync(`${s.dir}/Home`, { recursive: true });
+    fs.writeFileSync(`${s.dir}/Home/old.md`, "# Old\n");
+    const read = await (await fetch(`${s.base}/api/note?path=old.md`)).json();
+    assert.equal(read.path, "Home/old.md");
+    const res = await (await fetch(`${s.base}/api/note`, { method: "PUT", headers: H, body: JSON.stringify({ path: "old.md", text: "# Old\n\nmore\n", baseHash: read.hash }) })).json();
+    assert.equal(res.path, "Home/old.md");
+    assert.equal(res.conflictCopy, undefined);
+    assert.equal(fs.existsSync(`${s.dir}/old.md`), false);
   });
 
   test("mutations need the X-Notes-App header (CSRF)", async () => {

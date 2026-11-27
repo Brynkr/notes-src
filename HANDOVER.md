@@ -86,7 +86,7 @@ Answered on 27 Nov 2026:
 
 Still open (current behaviour in brackets):
 
-5. **Subfolders:** [nested folders are listed in the sidebar with a folder prefix; new notes are created at the notes root; no folder UI]
+5. **Subfolders:** partly answered 28 Nov: top-level `Home/` and `Work/` folders are the two modes (Section 17). [folders inside a mode are listed with a folder prefix; new notes go to the mode's folder; no folder UI]
 7. **Default branch and remote name** [`main` and `origin`, configurable in Settings]
 10. **Which Pi?** The owner has a Raspberry Pi 2 (armv7, 1 GB) that already runs other services. If that's the notes host, Node must stay on 22 (Node 24 has no armv7 build); the installer handles this. [supported]
 11. **Link renames:** should changing a note's title rewrite `[[links]]` to it in other notes? [no; old links show as missing]
@@ -139,6 +139,7 @@ notes-app/
     markdown.ts      title/front-matter helpers used by both
     links.ts         [[wiki link]] parsing and resolution
     fuzzy.ts         quick-switcher matching
+    modes.ts         Home/Work modes: which folder a path belongs to
   web/
     main.ts          UI wiring, shortcuts, server events
     api.ts           fetch wrappers + EventSource
@@ -431,7 +432,16 @@ Baseline before changes: typecheck, build and all 74 unit tests pass on the owne
 - *Toggle for underlining/spell check*: already built. The spell check toggle and the 16 themes are in the Appearance pop-out (top right); the owner had missed it and wants no change. No link-underline toggle (no preference given).
 - *16 themes choosable in settings*: already built (Appearance pop-out), as above.
 - *Programming-language highlighting and an "IDE mode"* (change; relaxes the .md/.txt-only folder guard): **decided: light IDE.** Notes mode stays the default; a toggle at the top right switches to IDE mode, which adds syntax highlighting per language (Python, C, C++, JS…), a file-tree sidebar and a git changes/diff panel. No real linters: stays dependency-free and works on the Pi. Code files are allowed in the folder. Not built yet.
-- *Home and Work modes* (change; answers open question 5): **decided:** `Home/` and `Work/` subfolders of the notes root, switched from the sidebar under the "Notes" heading. Existing root notes move into `Home/` in one commit (git keeps their history). Search, daily note, Trash and the quick switcher are scoped to the current mode. Not built yet.
+- *Home and Work modes* (change; answers open question 5): **decided:** `Home/` and `Work/` subfolders of the notes root, switched from the sidebar under the "Notes" heading. Existing root notes move into `Home/` in one commit (git keeps their history). Search, daily note, Trash and the quick switcher are scoped to the current mode. **Built (28 Nov)**, see below.
+- *UI tests on Windows* (bug found while testing): `test:ui` only looked for Chrome in Linux/macOS locations, so it never ran on Windows without `CHROME=...`. `tests/ui/chrome.mjs` now also finds Chrome and Edge under Program Files / LocalAppData. Running it on Windows showed two things that were already there before the modes change (checked against the old code): the features test saw brief 409s on `GET /api/notes` and `/api/note` while Settings restarts the runtime (the UI retries; the test now allows them), and the smoke test read files mid-merge (it now waits for the merge to finish).
+
+**28 Nov 2026: Home and Work modes (built).**
+
+- `shared/modes.ts`: a note's mode is its first path segment (`Home/`, `Work/`, matched case-insensitively); anything else counts as Home. Mode choice is per device (`notes-app:mode:v1`), like the layout. Switch: the Home | Work control under "Notes" in the sidebar, or Alt+M.
+- Scoped to the mode: sidebar list, search (`?mode=`), quick switcher, daily note (each mode has its own), new notes (`POST /api/notes {mode}`, default Home), Trash dialog (Empty Trash only empties this mode's). Not scoped: open panes stay open when switching; wiki links resolve in the current mode first, then the other; the conflict banner lists both modes.
+- **Moving existing notes:** at startup `NotesRuntime` moves notes outside both folders into `Home/` (`NoteStore.moveIntoModes`, under the worktree lock), and the next sync commits it (git sees renames; `--follow` history works). Only when there's something to move, it syncs first (max 15 s) so other machines' edits at the old paths are moved too.
+- Merges run with `-X no-renames`, so a machine that moved before pulling another machine's edit to `a.md` gets `a.md` back at the root beside a stale `Home/a.md`. On the next move: same bytes → the root file is removed; `Home/` copy is an earlier version of the root file in git history (`isEarlierVersion`) → the newer text replaces it; otherwise both were edited → the root file becomes a conflict copy in `Home/` (shows in the banner). Until the next start such a note shows in Home at its root path. Tests: `tests/sync/modes.test.ts`.
+- Reads and saves at a note's old root path go to `Home/<path>` when the root file is gone (`NoteStore.followMove`; the response's `path` says so), so a tab left open across the update, the unsaved-text stash and offline clients never recreate a moved note at the root. The UI also repoints restored panes on boot.
 
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 

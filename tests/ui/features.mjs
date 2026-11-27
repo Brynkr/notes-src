@@ -7,12 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { CHROME } from "./chrome.mjs";
+import { noteFiles } from "./files.mjs";
 
-const CHROME =
-  process.env.CHROME ??
-  ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((p) =>
-    fs.existsSync(p),
-  );
 const SHOTS = process.env.SHOTS ?? path.resolve("tests/ui/screenshots");
 const PORT = 4797;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "notes-ui2-"));
@@ -59,7 +56,7 @@ const waitFor = async (fn, what, ms = 8000) => {
     await sleep(100);
   }
 };
-const files = () => (fs.existsSync(notesDir) ? fs.readdirSync(notesDir).filter((f) => f.endsWith(".md")).sort() : []);
+const files = () => noteFiles(notesDir);
 const read = (f) => fs.readFileSync(path.join(notesDir, f), "utf8");
 const combo = async (mods, key) => {
   for (const m of mods) await page.keyboard.down(m);
@@ -150,7 +147,16 @@ try {
     await page.waitForSelector(".pane.active .backlinks:not([hidden]) .backlink");
     assert.match(await page.$eval(".pane.active .backlink-context", (e) => e.textContent), /See also \[\[Shopping list\]\]/);
     await shot("12-backlinks");
-    await page.click(".pane.active .backlink");
+    // The list re-renders when the index catches up; retry if the row was replaced mid-click.
+    for (let i = 0; ; i++) {
+      try {
+        await page.click(".pane.active .backlink");
+        break;
+      } catch (err) {
+        if (i >= 4 || !/detached|not clickable/i.test(String(err))) throw err;
+        await sleep(200);
+      }
+    }
     await waitFor(async () => (await activeTitle()) === "Garden plans", "back to source");
     await page.waitForSelector(".cm-wikilink:not(.cm-wikilink-missing)");
   });
@@ -220,7 +226,7 @@ try {
     await waitFor(() => files().some((f) => read(f).includes("after renaming")), "saved");
     await page.click(".sync .icon-btn");
     await waitFor(() => /study-pc/.test(git(remote, "log", "-1", "--format=%s", "main")), "pushed under new name");
-    assert.match(git(remote, "ls-tree", "--name-only", "main"), /garden-plans/);
+    assert.match(git(remote, "ls-tree", "-r", "--name-only", "main"), /^Home\/\d{8}-\d{6}-garden-plans\.md$/m);
   });
 
   await step("today's note (Alt+D) with a clickable checkbox", async () => {
@@ -301,8 +307,41 @@ try {
     await page.waitForSelector(".banner[hidden]");
   });
 
-  // The setup refusal above is an expected 400.
-  const unexpected = errors.filter((e) => !/400 (POST|PUT) .*\/api\/(setup|settings)|status of 400/.test(e));
+  await step("Home | Work switch: Work has its own notes and search", async () => {
+    const homeCount = await page.$$eval(".note-list .note-item", (els) => els.length);
+    assert.ok(homeCount > 0);
+    await page.click('.mode-switch [data-mode="work"]');
+    await waitFor(async () => (await page.$$(".note-list .note-item")).length === 0, "Work list empty");
+    assert.equal(await page.$eval('.mode-switch [data-mode="work"]', (e) => e.getAttribute("aria-pressed")), "true");
+    await combo(["Control"], "KeyP");
+    await page.type(".switcher-input", "Standup");
+    await page.waitForSelector(".switcher-row.create");
+    await page.keyboard.press("Enter");
+    await waitFor(async () => (await activeTitle()) === "Standup", "work note created");
+    await page.keyboard.type("Garden of tasks");
+    await waitFor(() => files().some((f) => /^Work\/\d{8}-\d{6}-standup\.md$/.test(f) && read(f).includes("Garden of tasks")), "saved in Work/");
+    await waitFor(async () => (await page.$$(".note-list .note-item")).length === 1, "one Work note listed");
+    // Search only finds Work notes ("Garden plans" is in Home).
+    await page.type(".search-input", "garden");
+    await waitFor(async () => {
+      const titles = await page.$$eval(".note-list .note-item .note-title", (els) => els.map((e) => e.textContent));
+      return titles.length === 1 && titles[0] === "Standup";
+    }, "Work-only search");
+    await shot("19-work-mode");
+    await page.keyboard.press("Escape");
+    // Alt+M switches back; the Work note isn't in Home's list.
+    await page.click(".pane.active .cm-content");
+    await combo(["Alt"], "KeyM");
+    await waitFor(async () => (await page.$$eval(".note-list .note-item", (els) => els.length)) === homeCount, "Home list back");
+    const homeTitles = await page.$$eval(".note-list .note-item .note-title", (els) => els.map((e) => e.textContent));
+    assert.ok(!homeTitles.includes("Standup"));
+  });
+
+  // The setup refusal above is an expected 400. While Settings restarts the
+  // notes runtime, reads get 409 ("not set up") for a moment; the UI retries.
+  const unexpected = errors.filter(
+    (e) => !/400 (POST|PUT) .*\/api\/(setup|settings)|status of 400|409 GET .*\/api\/notes?(\?|$)|status of 409/.test(e),
+  );
   assert.deepEqual(unexpected, [], "browser console errors");
   console.log(`\nAll feature checks passed. Screenshots in ${SHOTS}`);
 } catch (err) {
@@ -316,5 +355,5 @@ try {
   await browser.close();
   server.kill("SIGTERM");
   await sleep(300);
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: the browser may still hold files for a moment
 }

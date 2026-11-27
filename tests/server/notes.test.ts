@@ -8,6 +8,7 @@ import { SearchIndex, toFtsQuery } from "../../server/search.ts";
 import { NoteWatcher } from "../../server/watcher.ts";
 import { MARK_END, MARK_START } from "../../shared/types.ts";
 import { tempDir } from "../helpers.ts";
+import { inMode, modeOf, pathInMode } from "../../shared/modes.ts";
 
 let dir: string;
 let store: NoteStore;
@@ -220,5 +221,90 @@ describe("SearchIndex", () => {
     idx.upsert("a.md", "h", "# hi\n");
     assert.equal(idx.search("hi").length, 1);
     idx.close();
+  });
+});
+
+describe("Home/Work modes", () => {
+  test("modeOf / pathInMode", () => {
+    assert.equal(modeOf("Work/a.md"), "work");
+    assert.equal(modeOf("work/sub/a.md"), "work");
+    assert.equal(modeOf("Home/a.md"), "home");
+    assert.equal(modeOf("a.md"), "home");
+    assert.equal(modeOf("Workshop/a.md"), "home");
+    assert.equal(modeOf("Work.md"), "home");
+    assert.equal(pathInMode("Work/sub/a.md"), "sub/a.md");
+    assert.equal(pathInMode("other/a.md"), "other/a.md");
+  });
+
+  test("create puts the note in the mode's folder", async () => {
+    assert.equal((await store.create("Plan", "work")).path, "Work/20261127-090507-plan.md");
+    assert.equal((await store.create("Plan", "home")).path, "Home/20261127-090507-plan.md");
+    assert.equal((await store.create("Plan")).path, "20261127-090507-plan.md");
+  });
+
+  test("moveIntoModes moves root notes and folders into Home/, leaving Home/, Work/ and the Trash alone", async () => {
+    await store.write("a.md", "# A\n", null);
+    await store.write("sub/b.md", "# B\n", null);
+    await store.write("Work/w.md", "# W\n", null);
+    await store.write("Home/h.md", "# H\n", null);
+    fs.mkdirSync(path.join(dir, ".trash"));
+    fs.writeFileSync(path.join(dir, ".trash", "old.md"), "# Old\n");
+    const moved = await store.moveIntoModes();
+    assert.deepEqual(moved.sort(), [["a.md", "Home/a.md"], ["sub/b.md", "Home/sub/b.md"]]);
+    assert.deepEqual((await store.list()).map((n) => n.path).sort(), ["Home/a.md", "Home/h.md", "Home/sub/b.md", "Work/w.md"]);
+    assert.equal(fs.existsSync(path.join(dir, "sub")), false, "emptied folder removed");
+    assert.equal(fs.existsSync(path.join(dir, ".trash", "old.md")), true);
+    assert.deepEqual(await store.moveIntoModes(), [], "nothing left to move");
+  });
+
+  test("moveIntoModes: a same-content leftover is removed; different content becomes a conflict copy, or replaces an older Home copy", async () => {
+    const put = (rel: string, text: string) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), text);
+    };
+    put("Home/same.md", "# S\n");
+    put("same.md", "# S\n");
+    put("Home/diff.md", "# D\n\nin Home\n");
+    put("diff.md", "# D\n\nat the root\n");
+    put("Home/old.md", "# O\n\nolder\n");
+    put("old.md", "# O\n\nnewer\n");
+    const moved = await store.moveIntoModes(async (rel) => rel === "old.md");
+    assert.equal(fs.existsSync(path.join(dir, "same.md")), false);
+    assert.equal(fs.readFileSync(path.join(dir, "Home", "diff.md"), "utf8"), "# D\n\nin Home\n");
+    assert.equal(fs.readFileSync(path.join(dir, "Home", "diff (conflict 2026-11-27 laptop).md"), "utf8"), "# D\n\nat the root\n");
+    assert.equal(fs.readFileSync(path.join(dir, "Home", "old.md"), "utf8"), "# O\n\nnewer\n");
+    assert.equal(fs.existsSync(path.join(dir, "old.md")), false);
+    assert.equal(moved.length, 3);
+  });
+
+  test("search can be narrowed to one mode", () => {
+    const idx = new SearchIndex(":memory:");
+    idx.upsert("Home/a.md", "1", "# Garden\n\ntomatoes\n");
+    idx.upsert("Work/b.md", "2", "# Garden project\n");
+    idx.upsert("c.md", "3", "# Garden at the root\n");
+    const only = (m: "home" | "work") => idx.search("garden", (p) => inMode(p, m)).map((h) => h.path).sort();
+    assert.deepEqual(only("work"), ["Work/b.md"]);
+    assert.deepEqual(only("home"), ["Home/a.md", "c.md"], "root notes count as Home");
+    idx.close();
+  });
+
+  test("a lowercase work folder counts as Work", async () => {
+    await store.write("work/w.md", "# W\n", null);
+    assert.deepEqual(await store.moveIntoModes(), []);
+  });
+
+  test("reads and saves at a moved note's old path go to Home/, never recreating it at the root", async () => {
+    const n = await store.write("a.md", "# A\n", null);
+    await store.moveIntoModes();
+    const r = await store.read("a.md");
+    assert.equal(r.path, "Home/a.md");
+    assert.equal(r.hash, n.hash);
+    const saved = await store.write("a.md", "# A\n\nfrom an old tab\n", n.hash);
+    assert.equal(saved.path, "Home/a.md");
+    assert.equal(saved.conflictCopy, undefined, "baseHash still matches after the move");
+    assert.equal(fs.existsSync(path.join(dir, "a.md")), false);
+    assert.equal(fs.readFileSync(path.join(dir, "Home", "a.md"), "utf8"), "# A\n\nfrom an old tab\n");
+    // A genuinely new root note is written where asked.
+    assert.equal((await store.write("new.md", "# N\n", null)).path, undefined);
   });
 });

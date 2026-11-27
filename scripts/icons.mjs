@@ -1,8 +1,9 @@
 // Renders installer icons from web/static/icon.svg (dev tool; needs Chrome + Python Pillow for the .ico).
 import puppeteer from "puppeteer-core";
+import { CHROME } from "../tests/ui/chrome.mjs";
 import fs from "node:fs";
 const svg = fs.readFileSync("web/static/icon.svg", "utf8");
-const b = await puppeteer.launch({ executablePath: process.env.CHROME ?? "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox"] });
+const b = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox"] });
 const p = await b.newPage();
 for (const size of [512, 256]) {
   await p.setViewport({ width: size, height: size });

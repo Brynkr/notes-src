@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { CHROME } from "../tests/ui/chrome.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "notes-shot-"));
 const repo = path.join(root, "notes");
@@ -25,7 +26,7 @@ const env = { ...process.env, NOTES_APP_CONFIG_DIR: path.join(root, "c"), NOTES_
 const server = spawn(process.execPath, ["dist/server.js", "--repo", repo, "--port", "4798", "--machine-name", "desktop", "--no-sync"], { env, stdio: "ignore" });
 // (No --repo needed for a fresh folder: it is created and initialised.)
 await new Promise((r) => setTimeout(r, 1200));
-const browser = await puppeteer.launch({ executablePath: process.env.CHROME ?? "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox", "--no-proxy-server"] });
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--no-proxy-server"] });
 try {
   for (const scheme of ["light", "dark"]) {
     const page = await browser.newPage();

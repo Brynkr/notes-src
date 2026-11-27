@@ -2,6 +2,8 @@
 
 import type { NoteMeta, SyncStatusDto } from "../shared/types.ts";
 import { linkKey, resolveLink } from "../shared/links.ts";
+import { inMode, MODE_FOLDER, MODE_LABEL, modeFolderOf } from "../shared/modes.ts";
+import { ModeStore } from "./state/mode.ts";
 import { api, ApiError, subscribe } from "./api.ts";
 import { BufferStore } from "./state/buffers.ts";
 import { Workspace } from "./state/workspace.ts";
@@ -22,14 +24,20 @@ import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 
 const workspace = new Workspace();
 const buffers = new BufferStore();
+const mode = new ModeStore();
+/** Every note, both modes (links and conflict copies can cross modes). */
 let notes: NoteMeta[] = [];
+/** The notes of the current mode: what the sidebar, switcher and daily note use. */
+function modeNotes(): NoteMeta[] {
+  return notes.filter((n) => inMode(n.path, mode.value));
+}
 let status: SyncStatusDto | null = null;
 
 // --- actions -----------------------------------------------------------------
 
 async function createNote(title: string, toSide = false): Promise<void> {
   try {
-    const note = await api.create(title);
+    const note = await api.create(title, mode.value);
     buffers.adopt(note.path, note.text, note.hash);
     // Cursor after the "# Title" line, ready to type.
     if (toSide) workspace.openToSide(note.path, note.text.length);
@@ -106,7 +114,7 @@ async function refreshNotes(): Promise<void> {
     try {
       notes = await api.list();
       rebuildLinkKeys();
-      sidebar.setNotes(notes);
+      sidebar.setNotes(modeNotes());
       grid.notesChanged();
       sidebar.setActivePath(workspace.active.notePath);
     } catch {
@@ -141,20 +149,28 @@ const sidebar = new Sidebar({
   open: openNote,
   create: createNote,
   collapse: () => setSidebarOpen(false),
+  mode: () => mode.value,
+  setMode: (m) => mode.set(m),
 });
+mode.onChange(() => {
+  sidebar.modeChanged();
+  sidebar.setNotes(modeNotes());
+});
+sidebar.modeChanged();
 
 /** Today's note, titled YYYY-MM-DD (local date): open it, or create it. */
 function openDailyNote(): void {
   const d = new Date();
   const title = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const hit = notes.find((n) => n.title === title && !n.conflict);
+  const hit = modeNotes().find((n) => n.title === title && !n.conflict);
   if (hit) openNote(hit.path, false);
   else void createNote(title);
 }
 
 /** Follow a wiki link: open the note, or create it if it doesn't exist yet. */
 function followLink(target: string, toSide: boolean): void {
-  const hit = resolveLink(target, notes);
+  // Same mode first, so Home and Work can each have a note called "Ideas".
+  const hit = resolveLink(target, modeNotes()) ?? resolveLink(target, notes);
   if (hit) openNote(hit.path, toSide);
   else void createNote(target, toSide);
 }
@@ -196,7 +212,7 @@ const grid = new PaneGrid({
 });
 
 const switcher = new QuickSwitcher({
-  notes: () => notes,
+  notes: () => modeNotes(),
   open: openNote,
   create: (title, toSide) => void createNote(title, toSide),
   cancel: () => grid.focusActive(),
@@ -207,6 +223,7 @@ const historyDialog = new HistoryDialog({ onClosed: () => grid.focusActive() });
 const trashDialog = new TrashDialog({
   onRestored: (path) => void refreshNotes().then(() => openNote(path, false)),
   onClosed: () => grid.focusActive(),
+  mode: () => mode.value,
 });
 
 const settingsDialog = new SettingsDialog({
@@ -345,6 +362,10 @@ window.addEventListener(
     if (e.altKey && !mod && e.code === "KeyN") {
       e.preventDefault();
       showNewNote();
+    } else if (e.altKey && !mod && e.code === "KeyM") {
+      e.preventDefault();
+      mode.set(mode.value === "home" ? "work" : "home");
+      toast(`${MODE_LABEL[mode.value]} notes`, "info", [], 1500);
     } else if (e.altKey && !mod && e.code === "KeyD") {
       e.preventDefault();
       openDailyNote();
@@ -480,6 +501,7 @@ async function boot(): Promise<void> {
   const recovered = await buffers.recoverStash();
   if (recovered) toast(`Recovered ${recovered} unsaved note${recovered === 1 ? "" : "s"} from the last session.`, "info");
   await refreshNotes();
+  followMovedNotes();
   // First run, or nothing was open: show the most recent note.
   if (workspace.state.panes.every((p) => !p.notePath) && notes.length && !isNarrow()) {
     workspace.open(notes[0].path);
@@ -488,6 +510,19 @@ async function boot(): Promise<void> {
   sidebar.setActivePath(workspace.active.notePath);
   if (!status) api.status().then(setStatus, () => undefined);
   registerOffline();
+}
+
+/**
+ * Notes that were at the root are moved into Home/ by the server. Point panes
+ * restored from before the move at the new paths.
+ */
+function followMovedNotes(): void {
+  const have = new Set(notes.map((n) => n.path));
+  for (const p of workspace.state.panes) {
+    if (!p.notePath || have.has(p.notePath) || modeFolderOf(p.notePath)) continue;
+    const moved = `${MODE_FOLDER.home}/${p.notePath}`;
+    if (have.has(moved)) workspace.renamed(p.notePath, moved);
+  }
 }
 
 // --- offline ---------------------------------------------------------------------

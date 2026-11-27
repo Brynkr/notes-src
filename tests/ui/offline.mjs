@@ -8,12 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { CHROME } from "./chrome.mjs";
 
-const CHROME =
-  process.env.CHROME ??
-  ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((p) =>
-    fs.existsSync(p),
-  );
 const SHOTS = process.env.SHOTS ?? path.resolve("tests/ui/screenshots");
 const PORT = 4796;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "notes-offline-"));
@@ -68,7 +64,7 @@ const step = async (name, fn) => {
   console.log("ok");
 };
 const activeText = () => page.$eval(".pane.active .cm-content", (e) => e.innerText);
-const second = path.join(repo, "20261127-090000-second.md");
+const second = path.join(repo, "Home", "20261127-090000-second.md"); // moved into Home/ at startup
 
 try {
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "domcontentloaded" });
@@ -92,7 +88,7 @@ try {
     await page.waitForSelector(".sync-dot.error");
     const items = await page.$$eval(".note-item .note-title", (els) => els.map((e) => e.textContent));
     assert.deepEqual(items.sort(), ["First", "Second"]);
-    await page.click('.note-item[data-path="20261127-090000-second.md"]');
+    await page.click('.note-item[data-path="Home/20261127-090000-second.md"]');
     await waitFor(async () => (await activeText()).includes("Never opened before going offline"), "cached note");
     await page.screenshot({ path: path.join(SHOTS, "19-offline.png") });
   });
@@ -106,7 +102,7 @@ try {
     await sleep(1200); // save attempt fails; text is stashed
     assert.equal(fs.readFileSync(second, "utf8").includes("Written offline"), false);
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.click('.note-item[data-path="20261127-090000-second.md"]').catch(() => undefined);
+    await page.click('.note-item[data-path="Home/20261127-090000-second.md"]').catch(() => undefined);
     await waitFor(async () => (await activeText().catch(() => "")).includes("Written offline."), "stashed text shown after reload");
   });
 
@@ -127,5 +123,5 @@ try {
 } finally {
   await browser.close();
   if (server) await stopServer();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: the browser may still hold files for a moment
 }

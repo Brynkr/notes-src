@@ -11,8 +11,9 @@ import type { HistoryEntry, ServerEvent, SyncStatusDto } from "../shared/types.t
 import { dataDir, type Config } from "./config.ts";
 import { Git, Queue } from "./git.ts";
 import { NoteStore } from "./notes.ts";
+import { modeFolderOf } from "../shared/modes.ts";
 import { SearchIndex } from "./search.ts";
-import { SyncEngine, SyncScheduler } from "./sync.ts";
+import { isEarlierVersion, SyncEngine, SyncScheduler } from "./sync.ts";
 import { NoteWatcher } from "./watcher.ts";
 
 export const DEFAULT_GITIGNORE = `# Written by notes-app. Edit freely.
@@ -76,14 +77,39 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
     const repoRoot = await ensureRepo(cfg);
     const rt = new NotesRuntime(cfg, repoRoot);
     fs.mkdirSync(rt.notesRoot, { recursive: true });
+    const moved = await rt.moveIntoModes();
     await rt.store.scan();
     const indexed = rt.search.indexed();
     for (const [p, k] of rt.store.known) if (indexed.get(p) !== k.hash) rt.reindex(p);
     for (const p of indexed.keys()) if (!rt.store.known.has(p)) rt.search.remove(p);
     rt.wire();
     rt.watcher.start();
-    if (cfg.sync) rt.scheduler.start();
+    if (cfg.sync) {
+      rt.scheduler.start();
+      if (moved.length) rt.scheduler.noteSaved(); // commit the moves soon
+    }
     return rt;
+  }
+
+  /**
+   * Move notes outside Home/ and Work/ into Home/. The first time (when there
+   * are any), pull first so edits other machines made at the old paths are
+   * moved too rather than arriving later beside a stale copy. That pull waits
+   * at most 15 s, so an offline start isn't held up for long.
+   */
+  private async moveIntoModes(): Promise<[string, string][]> {
+    const outside = (await this.store.walk()).some((p) => !modeFolderOf(p));
+    if (!outside) return [];
+    if (this.cfg.sync) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.engine.request().catch(() => undefined),
+        new Promise((r) => (timer = setTimeout(r, 15_000))),
+      ]);
+      clearTimeout(timer);
+    }
+    const prefix = path.relative(this.repoRoot, this.notesRoot).split(path.sep).join("/");
+    return this.store.moveIntoModes((rel, homeAbs) => isEarlierVersion(this.git, prefix ? `${prefix}/${rel}` : rel, homeAbs));
   }
 
   private emitEvent(ev: ServerEvent): void {

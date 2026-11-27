@@ -30,6 +30,8 @@ export interface SaveResponse {
   hash: string;
   /** Set when the file had changed on disk: the disk version was saved here. */
   conflictCopy?: string;
+  /** Set when the note had moved (into Home/) and was saved there instead of at the path asked for. */
+  path?: string;
 }
 
 export type SyncState = "synced" | "syncing" | "offline" | "conflict" | "error" | "local" | "disabled";

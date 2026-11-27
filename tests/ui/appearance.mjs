@@ -8,12 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { CHROME } from "./chrome.mjs";
 
-const CHROME =
-  process.env.CHROME ??
-  ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((p) =>
-    fs.existsSync(p),
-  );
 const SHOTS = process.env.SHOTS ?? path.resolve("tests/ui/screenshots");
 const PORT = 4795;
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "notes-look-"));
@@ -162,5 +158,5 @@ try {
 } finally {
   await browser.close();
   server.kill();
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: the browser may still hold files for a moment
 }
