@@ -418,7 +418,9 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 
-**Not verified yet (no Windows/macOS/Pi here):** the PowerShell installer, macOS LaunchAgent/app bundle, the private Node download, Tailscale serve, and Git Credential Manager sign-in. The CI workflow runs the installers on real Windows/macOS/Linux runners; check its results after the first push.
+**Verified in CI (27 Nov 2026, run on Brynkr/notes-src):** unit tests on Linux/Windows/macOS × Node 22/24, browser tests, and install → launch → uninstall on Windows (PowerShell installer, shortcuts, Apps & features entry), macOS (LaunchAgent, app bundle) and Linux. The first run found a Windows-only bug (corrupt index file locked while deleting) and an over-long default machine name; both are fixed.
+
+**Still not verified:** the private Node download (nodejs.org unreachable from the dev sandbox), `tailscale serve`, Git Credential Manager sign-in, and a real Raspberry Pi 2.
 
 **Next steps (suggested order)**
 
