@@ -128,27 +128,28 @@ export class Workspace {
     if (p) this.setActive(p.id);
   }
 
-  /** Open a note in the active pane (or a given pane). */
-  open(path: string, paneId = this.state.activePaneId): void {
+  /** Open a note in the active pane (or a given pane), optionally with the cursor at `at`. */
+  open(path: string, paneId = this.state.activePaneId, at = 0): void {
     this.state = {
       ...this.state,
       activePaneId: paneId,
-      panes: this.state.panes.map((p) => (p.id === paneId ? { ...p, notePath: path, cursor: { anchor: 0, head: 0 }, scrollTop: 0 } : p)),
+      panes: this.state.panes.map((p) => (p.id === paneId ? { ...p, notePath: path, cursor: { anchor: at, head: at }, scrollTop: 0 } : p)),
     };
     this.commit(true);
   }
 
   /** "Open to the side": add a pane next to the active one, growing the layout. */
-  openToSide(path: string | null): void {
+  openToSide(path: string | null, at = 0): void {
     const { panes, layout } = this.state;
     const idx = panes.findIndex((p) => p.id === this.state.activePaneId);
     if (panes.length >= 4) {
       const target = panes[(idx + 1) % panes.length];
-      if (path) this.open(path, target.id);
+      if (path) this.open(path, target.id, at);
       else this.setActive(target.id);
       return;
     }
     const p = newPane(path);
+    p.cursor = { anchor: at, head: at };
     const next = [...panes.slice(0, idx + 1), p, ...panes.slice(idx + 1)];
     this.state = { ...this.state, panes: next, layout: presetFor(next.length, layout), activePaneId: p.id };
     this.commit(true);

@@ -24,6 +24,11 @@ export interface Config {
   syncIdleSeconds: number;
   syncIntervalSeconds: number;
   sync: boolean;
+  /**
+   * Extra host names this server answers to while listening on 127.0.0.1,
+   * e.g. the Tailscale name when published with `tailscale serve`.
+   */
+  allowedHosts: string[];
   /** scrypt hash; when set, every request needs this password. */
   passwordHash?: string;
 }
@@ -58,6 +63,7 @@ export function defaults(): Config {
     syncIdleSeconds: 8,
     syncIntervalSeconds: 180,
     sync: true,
+    allowedHosts: [],
   };
 }
 
@@ -77,7 +83,7 @@ export function saveConfigFile(cfg: Partial<Config>): void {
 }
 
 export interface Cli {
-  command: "serve" | "set-password" | "clear-password" | "help" | "version";
+  command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch";
   overrides: Partial<Config>;
   open: boolean;
   save: boolean;
@@ -104,6 +110,7 @@ export function parseArgs(argv: string[]): Cli {
       case "clear-password":
       case "help":
       case "version":
+      case "launch":
         cli.command = a;
         break;
       case "-h":
@@ -124,6 +131,9 @@ export function parseArgs(argv: string[]): Cli {
         break;
       case "--host":
         o.host = need(i++, a);
+        break;
+      case "--allow-host":
+        o.allowedHosts = [...(o.allowedHosts ?? []), need(i++, a).toLowerCase()];
         break;
       case "--lan":
         o.host = "0.0.0.0";
@@ -192,17 +202,20 @@ export const HELP = `notes-app: git-backed Markdown notes
 
 Usage:
   notes-app [options]            start the server
+  notes-app launch               start it in the background if needed, open the app window
   notes-app set-password         require a password (needed for --lan)
   notes-app clear-password
 
 Options:
-  --repo <path>          git repo holding your notes (created if missing)
+  --repo <path>          git repo holding your notes (or set it up in the app)
   --notes-dir <dir>      folder inside the repo for notes (default ".")
   --remote <name>        git remote to sync with (default origin)
   --branch <name>        branch to sync (default main)
   --port <n>             default 4747
   --host <addr>          default 127.0.0.1 (this machine only)
-  --lan                  listen on all interfaces (for the Raspberry Pi)
+  --lan                  listen on all interfaces (home network)
+  --allow-host <name>    also answer to this host name, e.g. pi.tailnet.ts.net
+                         when published with "tailscale serve" (repeatable)
   --machine-name <name>  used in commit messages and conflict copies
   --sync-idle <s>        sync this long after the last save (default 8)
   --sync-interval <s>    background sync period (default 180, 0 = off)

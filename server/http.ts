@@ -2,12 +2,13 @@
 //
 // Security model:
 // - Default bind is 127.0.0.1. On loopback, the Host header must be a loopback
-//   name (blocks DNS-rebinding attacks from web pages).
+//   name or one of the configured allowedHosts (e.g. a Tailscale name), which
+//   blocks DNS-rebinding attacks from web pages.
 // - Every mutating request needs the X-Notes-App header. Browsers cannot add
 //   custom headers cross-origin without a CORS preflight, which is never
 //   granted, so other websites cannot make changes (CSRF).
-// - With a password set (required for --lan), every request needs HTTP Basic
-//   auth. Use it on a trusted network or over a VPN such as Tailscale.
+// - With a password set (required whenever other machines can reach the
+//   server), every request needs HTTP Basic auth.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -15,22 +16,50 @@ import http from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
 import { keysForNote } from "../shared/links.ts";
-import type { AppInfo, Backlink, SaveRequest, ServerEvent, SyncStatusDto } from "../shared/types.ts";
-import { verifyPassword } from "./config.ts";
+import type {
+  AppInfo,
+  Backlink,
+  RemoteTestResult,
+  SaveRequest,
+  ServerEvent,
+  SettingsDto,
+  SettingsPatch,
+  SettingsResult,
+  SetupRequest,
+  SyncStatusDto,
+} from "../shared/types.ts";
+import { isLoopback, verifyPassword } from "./config.ts";
 import { BadPath, Changed, NotFound, type NoteStore } from "./notes.ts";
 import type { SearchIndex } from "./search.ts";
+import { SettingsError } from "./settings.ts";
 
-export interface AppContext {
+/** What the API needs from a running notes folder (NotesRuntime, or a fake in tests). */
+export interface RuntimeLike {
   store: NoteStore;
   search: SearchIndex;
-  info: AppInfo;
-  status: () => SyncStatusDto;
-  syncNow: () => Promise<SyncStatusDto>;
-  onFocus: () => void;
-  /** Called after any write, with the note paths whose content changed. */
-  onSaved: (paths: string[]) => void;
+  status(): SyncStatusDto;
+  syncNow(): Promise<SyncStatusDto>;
+  focus(): void;
+  saved(paths: string[]): void;
+}
+
+export interface SettingsHandlers {
+  get(): Promise<SettingsDto>;
+  update(patch: SettingsPatch): Promise<SettingsResult>;
+  testRemote(url: string): Promise<RemoteTestResult>;
+  setup(req: SetupRequest): Promise<{ message: string }>;
+  setPassword(password: string | null): Promise<{ message: string }>;
+}
+
+export interface AppContext {
+  /** The open notes folder, or null while setup is needed. */
+  runtime(): RuntimeLike | null;
+  info(): AppInfo;
+  settings?: SettingsHandlers;
+  /** Address the server listens on. */
   host: string;
-  passwordHash?: string;
+  passwordHash(): string | undefined;
+  allowedHosts(): string[];
   webDir: string;
 }
 
@@ -57,9 +86,9 @@ export class HttpError extends Error {
 
 export function createApp(ctx: AppContext) {
   const clients = new Set<http.ServerResponse>();
-  const verified = new Set<string>();
+  const verified = new Map<string, string>(); // header digest -> password hash it was checked against
   const gzipCache = new Map<string, { etag: string; gz: Buffer }>();
-  const loopback = ctx.host === "127.0.0.1" || ctx.host === "localhost" || ctx.host === "::1";
+  const loopback = isLoopback(ctx.host);
 
   function broadcast(ev: ServerEvent): void {
     const data = `data: ${JSON.stringify(ev)}\n\n`;
@@ -67,15 +96,16 @@ export function createApp(ctx: AppContext) {
   }
 
   function checkAuth(req: http.IncomingMessage): boolean {
-    if (!ctx.passwordHash) return true;
+    const hash = ctx.passwordHash();
+    if (!hash) return true;
     const h = req.headers.authorization ?? "";
     if (!h.startsWith("Basic ")) return false;
     const digest = createHash("sha256").update(h).digest("hex");
-    if (verified.has(digest)) return true;
+    if (verified.get(digest) === hash) return true;
     const decoded = Buffer.from(h.slice(6), "base64").toString("utf8");
     const pw = decoded.slice(decoded.indexOf(":") + 1);
-    if (verifyPassword(pw, ctx.passwordHash)) {
-      verified.add(digest);
+    if (verifyPassword(pw, hash)) {
+      verified.set(digest, hash);
       return true;
     }
     return false;
@@ -84,7 +114,7 @@ export function createApp(ctx: AppContext) {
   function hostAllowed(req: http.IncomingMessage): boolean {
     if (!loopback) return true;
     const host = (req.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
-    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || ctx.allowedHosts().includes(host);
   }
 
   async function readJson<T>(req: http.IncomingMessage): Promise<T> {
@@ -96,16 +126,26 @@ export function createApp(ctx: AppContext) {
       chunks.push(chunk as Buffer);
     }
     try {
-      return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+      return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as T;
     } catch {
       throw new HttpError(400, "Invalid JSON");
     }
   }
 
   function send(res: http.ServerResponse, status: number, body: unknown): void {
-    const json = JSON.stringify(body);
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(json);
+    res.end(JSON.stringify(body));
+  }
+
+  function rt(): RuntimeLike {
+    const r = ctx.runtime();
+    if (!r) throw new HttpError(409, "Set up your notes folder first.");
+    return r;
+  }
+
+  function settings(): SettingsHandlers {
+    if (!ctx.settings) throw new HttpError(404, "Not found");
+    return ctx.settings;
   }
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
@@ -115,60 +155,80 @@ export function createApp(ctx: AppContext) {
 
     switch (route) {
       case "GET /api/info":
-        return send(res, 200, ctx.info);
+        return send(res, 200, ctx.info());
       case "GET /api/status":
-        return send(res, 200, ctx.status());
+        return send(res, 200, rt().status());
       case "GET /api/notes":
-        return send(res, 200, await ctx.store.list());
+        return send(res, 200, await rt().store.list());
       case "GET /api/note": {
         const p = url.searchParams.get("path") ?? "";
-        return send(res, 200, await ctx.store.read(p));
+        return send(res, 200, await rt().store.read(p));
       }
       case "PUT /api/note": {
+        const r = rt();
         const body = await readJson<SaveRequest>(req);
         if (typeof body.text !== "string") throw new HttpError(400, "text is required");
-        const result = await ctx.store.write(body.path, body.text, body.baseHash ?? null);
-        ctx.onSaved(result.conflictCopy ? [body.path, result.conflictCopy] : [body.path]);
+        const result = await r.store.write(body.path, body.text, body.baseHash ?? null);
+        r.saved(result.conflictCopy ? [body.path, result.conflictCopy] : [body.path]);
         broadcast({ type: "note-changed", path: body.path, hash: result.hash });
         broadcast({ type: "notes-changed" });
         return send(res, 200, result);
       }
       case "POST /api/notes": {
+        const r = rt();
         const body = await readJson<{ title?: string }>(req);
-        const note = await ctx.store.create(typeof body.title === "string" ? body.title : "");
-        ctx.onSaved([note.path]);
+        const note = await r.store.create(typeof body.title === "string" ? body.title : "");
+        r.saved([note.path]);
         broadcast({ type: "notes-changed" });
         return send(res, 201, note);
       }
       case "DELETE /api/note": {
+        const r = rt();
         const p = url.searchParams.get("path") ?? "";
-        await ctx.store.delete(p, url.searchParams.get("hash") ?? undefined);
-        ctx.search.remove(p);
-        ctx.onSaved([]);
+        await r.store.delete(p, url.searchParams.get("hash") ?? undefined);
+        r.search.remove(p);
+        r.saved([]);
         broadcast({ type: "note-deleted", path: p });
         broadcast({ type: "notes-changed" });
         return send(res, 200, { ok: true });
       }
       case "GET /api/search": {
         const q = url.searchParams.get("q") ?? "";
-        return send(res, 200, ctx.search.search(q));
+        return send(res, 200, rt().search.search(q));
       }
       case "GET /api/backlinks": {
+        const r = rt();
         const p = url.searchParams.get("path") ?? "";
-        ctx.store.resolve(p); // validates
-        const meta = ctx.store.known.get(p)?.meta;
-        const keys = keysForNote(p, meta?.title ?? "");
-        const hits = ctx.search
-          .backlinks(keys)
+        r.store.resolve(p); // validates
+        const meta = r.store.known.get(p)?.meta;
+        const hits = r.search
+          .backlinks(keysForNote(p, meta?.title ?? ""))
           .filter((b) => b.path !== p)
-          .map((b) => ({ ...b, title: ctx.store.known.get(b.path)?.meta.title ?? b.path }));
+          .map((b) => ({ ...b, title: r.store.known.get(b.path)?.meta.title ?? b.path }));
         return send(res, 200, hits satisfies Backlink[]);
       }
       case "POST /api/sync":
-        return send(res, 200, await ctx.syncNow());
+        return send(res, 200, await rt().syncNow());
       case "POST /api/focus":
-        ctx.onFocus();
+        ctx.runtime()?.focus();
         return send(res, 200, { ok: true });
+
+      case "GET /api/settings":
+        return send(res, 200, await settings().get());
+      case "PUT /api/settings":
+        return send(res, 200, await settings().update(await readJson<SettingsPatch>(req)));
+      case "POST /api/settings/test-remote": {
+        const body = await readJson<{ url?: string }>(req);
+        return send(res, 200, await settings().testRemote(String(body.url ?? "")));
+      }
+      case "POST /api/settings/password": {
+        const body = await readJson<{ password?: string | null }>(req);
+        const pw = body.password === null || body.password === undefined ? null : String(body.password);
+        return send(res, 200, await settings().setPassword(pw));
+      }
+      case "POST /api/setup":
+        return send(res, 200, await settings().setup(await readJson<SetupRequest>(req)));
+
       case "GET /api/events": {
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
@@ -177,7 +237,8 @@ export function createApp(ctx: AppContext) {
           "X-Accel-Buffering": "no",
         });
         res.write(`retry: 2000\n\n`);
-        res.write(`data: ${JSON.stringify({ type: "status", status: ctx.status() } satisfies ServerEvent)}\n\n`);
+        const r = ctx.runtime();
+        if (r) res.write(`data: ${JSON.stringify({ type: "status", status: r.status() } satisfies ServerEvent)}\n\n`);
         clients.add(res);
         const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
         req.on("close", () => {
@@ -211,8 +272,7 @@ export function createApp(ctx: AppContext) {
     }
     let body = data;
     const compressible = /\.(js|css|html|svg|json|map|webmanifest)$/.test(abs) && data.length > 1024;
-    const wantsGzip = /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
-    if (compressible && wantsGzip) {
+    if (compressible && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
       let hit = gzipCache.get(abs);
       if (!hit || hit.etag !== etag) {
         hit = { etag, gz: zlib.gzipSync(data, { level: 9 }) };
@@ -256,7 +316,7 @@ export function createApp(ctx: AppContext) {
         return;
       }
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      if (err instanceof BadPath) return send(res, 400, { error: err.message });
+      if (err instanceof BadPath || err instanceof SettingsError) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
       if (err instanceof Changed) return send(res, 409, { error: err.message });
       console.error(err);

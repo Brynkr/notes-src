@@ -13,7 +13,7 @@
     "dev": "node scripts/build.mjs && node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test --test-concurrency=1 \"tests/**/*.test.ts\"",
-    "test:ui": "node scripts/build.mjs && node --disable-warning=ExperimentalWarning tests/ui/smoke.mjs"
+    "test:ui": "node scripts/build.mjs && node tests/ui/smoke.mjs && node tests/ui/features.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.4",

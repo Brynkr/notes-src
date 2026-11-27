@@ -1,0 +1,162 @@
+// Everything that depends on a configured notes repo: git, note store,
+// search index, watcher, sync. The HTTP server outlives it, so settings
+// changes (another folder, another remote) can stop one runtime and start a
+// new one without restarting the process.
+
+import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import type { ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import { dataDir, type Config } from "./config.ts";
+import { Git, Queue } from "./git.ts";
+import { NoteStore } from "./notes.ts";
+import { SearchIndex } from "./search.ts";
+import { SyncEngine, SyncScheduler } from "./sync.ts";
+import { NoteWatcher } from "./watcher.ts";
+
+export const DEFAULT_GITIGNORE = `# Written by notes-app. Edit freely.
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.swp
+`;
+
+export interface RuntimeEvents {
+  event: [ServerEvent];
+}
+
+export class NotesRuntime extends EventEmitter<RuntimeEvents> {
+  readonly cfg: Config;
+  readonly repoRoot: string;
+  readonly notesRoot: string;
+  readonly git: Git;
+  readonly store: NoteStore;
+  readonly search: SearchIndex;
+  readonly engine: SyncEngine;
+  readonly scheduler: SyncScheduler;
+  readonly watcher: NoteWatcher;
+
+  private constructor(cfg: Config, repoRoot: string) {
+    super();
+    this.cfg = cfg;
+    this.repoRoot = repoRoot;
+    this.notesRoot = path.resolve(cfg.repoPath, cfg.notesDir);
+    this.git = new Git(repoRoot);
+    const worktreeLock = new Queue();
+    this.store = new NoteStore({ root: this.notesRoot, worktreeLock, machineName: cfg.machineName });
+    const indexFile = path.join(dataDir(), "index", createHash("sha256").update(this.notesRoot).digest("hex").slice(0, 16) + ".sqlite");
+    this.search = new SearchIndex(indexFile);
+    this.engine = new SyncEngine({ git: this.git, remote: cfg.remote, branch: cfg.branch, machineName: cfg.machineName, worktreeLock });
+    this.scheduler = new SyncScheduler(this.engine, { idleMs: cfg.syncIdleSeconds * 1000, intervalMs: cfg.syncIntervalSeconds * 1000 });
+    this.watcher = new NoteWatcher(this.store);
+  }
+
+  /** Validate the folder, open the index, start watching and syncing. */
+  static async start(cfg: Config): Promise<NotesRuntime> {
+    const repoRoot = await ensureRepo(cfg);
+    const rt = new NotesRuntime(cfg, repoRoot);
+    fs.mkdirSync(rt.notesRoot, { recursive: true });
+    await rt.store.scan();
+    const indexed = rt.search.indexed();
+    for (const [p, k] of rt.store.known) if (indexed.get(p) !== k.hash) rt.reindex(p);
+    for (const p of indexed.keys()) if (!rt.store.known.has(p)) rt.search.remove(p);
+    rt.wire();
+    rt.watcher.start();
+    if (cfg.sync) rt.scheduler.start();
+    return rt;
+  }
+
+  private emitEvent(ev: ServerEvent): void {
+    this.emit("event", ev);
+  }
+
+  private wire(): void {
+    const notesPrefix = path.relative(this.repoRoot, this.notesRoot).split(path.sep).join("/");
+    this.watcher.on("changed", (paths) => {
+      for (const p of paths) {
+        this.reindex(p);
+        const k = this.store.known.get(p);
+        if (k) this.emitEvent({ type: "note-changed", path: p, hash: k.hash });
+      }
+      this.emitEvent({ type: "notes-changed" });
+      this.emitEvent({ type: "status", status: this.status() });
+    });
+    this.watcher.on("deleted", (paths) => {
+      for (const p of paths) {
+        this.search.remove(p);
+        this.emitEvent({ type: "note-deleted", path: p });
+      }
+      this.emitEvent({ type: "notes-changed" });
+      this.emitEvent({ type: "status", status: this.status() });
+    });
+    this.engine.on("status", () => this.emitEvent({ type: "status", status: this.status() }));
+    this.engine.on("merged", (repoPaths: string[]) => {
+      const prefix = notesPrefix ? notesPrefix + "/" : "";
+      this.watcher.poke(repoPaths.filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length)));
+    });
+  }
+
+  reindex(p: string): void {
+    const k = this.store.known.get(p);
+    if (!k) return this.search.remove(p);
+    try {
+      this.search.upsert(p, k.hash, fs.readFileSync(this.store.resolve(p), "utf8"));
+    } catch {
+      /* deleted in the meantime: the watcher will report it */
+    }
+  }
+
+  /** After a write through the API. */
+  saved(paths: string[]): void {
+    for (const p of paths) this.reindex(p);
+    if (this.cfg.sync) this.scheduler.noteSaved();
+    this.emitEvent({ type: "status", status: this.status() });
+  }
+
+  status(): SyncStatusDto {
+    const s = this.engine.status;
+    const conflicts = [...this.store.known.values()].filter((k) => k.meta.conflict).map((k) => k.meta.path).sort();
+    let state: SyncStatusDto["state"] = this.cfg.sync ? s.state : "disabled";
+    if (state === "synced" && conflicts.length) state = "conflict";
+    if (state === "conflict" && !conflicts.length) state = "synced";
+    return {
+      state,
+      lastSyncMs: s.lastSyncMs,
+      lastAttemptMs: s.lastAttemptMs,
+      message: this.cfg.sync ? s.message : "Sync is turned off.",
+      conflicts,
+      ahead: s.ahead,
+    };
+  }
+
+  async syncNow(): Promise<SyncStatusDto> {
+    if (this.cfg.sync) await this.scheduler.now();
+    return this.status();
+  }
+
+  focus(): void {
+    if (this.cfg.sync) this.scheduler.focus();
+  }
+
+  /** Stop watching and syncing; one last bounded sync first if enabled. */
+  async stop(finalSyncMs = 10_000): Promise<void> {
+    this.watcher.stop();
+    if (this.cfg.sync) await this.scheduler.shutdown(finalSyncMs);
+    this.search.close();
+    this.removeAllListeners();
+  }
+}
+
+/** Make sure repoPath is inside a git work tree; create one if the folder is new. Returns the repo root. */
+export async function ensureRepo(cfg: Config): Promise<string> {
+  fs.mkdirSync(cfg.repoPath, { recursive: true });
+  const probe = new Git(cfg.repoPath);
+  const top = await probe.run(["rev-parse", "--show-toplevel"], { allowFail: true });
+  if (top.code === 0) return path.resolve(top.stdout.trim());
+  await probe.run(["init", "-q", "-b", cfg.branch]);
+  const gi = path.join(cfg.repoPath, ".gitignore");
+  if (!fs.existsSync(gi)) fs.writeFileSync(gi, DEFAULT_GITIGNORE);
+  return path.resolve(cfg.repoPath);
+}

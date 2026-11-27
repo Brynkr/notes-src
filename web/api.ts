@@ -1,6 +1,21 @@
 // Thin client for the server's HTTP API.
 
-import type { AppInfo, Backlink, NoteContent, NoteMeta, SaveRequest, SaveResponse, SearchHit, ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import type {
+  AppInfo,
+  Backlink,
+  NoteContent,
+  NoteMeta,
+  RemoteTestResult,
+  SaveRequest,
+  SaveResponse,
+  SearchHit,
+  ServerEvent,
+  SettingsDto,
+  SettingsPatch,
+  SettingsResult,
+  SetupRequest,
+  SyncStatusDto,
+} from "../shared/types.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -50,6 +65,11 @@ export const api = {
   search: (query: string) => call<SearchHit[]>("GET", `/api/search?q=${q(query)}`),
   sync: () => call<SyncStatusDto>("POST", "/api/sync", {}),
   focus: () => call<{ ok: true }>("POST", "/api/focus", {}),
+  settings: () => call<SettingsDto>("GET", "/api/settings"),
+  updateSettings: (patch: SettingsPatch) => call<SettingsResult>("PUT", "/api/settings", patch),
+  testRemote: (url: string) => call<RemoteTestResult>("POST", "/api/settings/test-remote", { url }),
+  setPassword: (password: string | null) => call<{ message: string }>("POST", "/api/settings/password", { password }),
+  setup: (req: SetupRequest) => call<{ message: string }>("POST", "/api/setup", req),
 };
 
 /** Subscribe to server events. EventSource reconnects by itself. */

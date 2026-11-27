@@ -76,8 +76,12 @@ const REJECTED_PATTERNS = [
   /incorrect old value/i,
 ];
 
+/** A wrong URL, not a connectivity problem: report it instead of retrying quietly. */
+const NOT_FOUND_PATTERNS = [/does not appear to be a git repository/i, /repository '.*' not found/i, /remote: repository not found/i];
+
 export function classifyGitError(stderr: string): GitErrorKind {
   if (AUTH_PATTERNS.some((re) => re.test(stderr))) return "auth";
+  if (NOT_FOUND_PATTERNS.some((re) => re.test(stderr))) return "other";
   if (REJECTED_PATTERNS.some((re) => re.test(stderr))) return "rejected";
   if (NETWORK_PATTERNS.some((re) => re.test(stderr))) return "network";
   return "other";
@@ -90,6 +94,11 @@ export interface RunOptions {
   allowFail?: boolean;
   /** Return stdout as raw bytes (for blobs). */
   binary?: boolean;
+  /**
+   * Let Git Credential Manager show its sign-in window (first-time setup on a
+   * desktop). Terminal prompts stay disabled either way.
+   */
+  interactiveAuth?: boolean;
 }
 
 export interface GitOptions {
@@ -130,7 +139,7 @@ export class Git {
       ...process.env,
       // Never block waiting for a password prompt: fail fast instead.
       GIT_TERMINAL_PROMPT: "0",
-      GCM_INTERACTIVE: "never",
+      GCM_INTERACTIVE: options.interactiveAuth ? "auto" : "never",
       // Stable, parseable English output.
       LC_ALL: "C",
       LANG: "C",
@@ -142,7 +151,8 @@ export class Git {
       return await new Promise<GitResult>((resolve, reject) => {
         let child;
         try {
-          child = spawn("git", args, { cwd: this.cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+          // Never allow helper-program transports such as ext::, whatever the repo config says.
+          child = spawn("git", ["-c", "protocol.ext.allow=never", ...args], { cwd: this.cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
         } catch (err) {
           reject(new GitError("missing-git", args, `Could not start git: ${(err as Error).message}`));
           return;

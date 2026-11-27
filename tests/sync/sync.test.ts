@@ -265,6 +265,8 @@ describe("helpers", () => {
     assert.equal(classifyGitError(" ! [rejected]        HEAD -> main (fetch first)\nerror: failed to push some refs"), "rejected");
     assert.equal(classifyGitError(" ! [remote rejected] HEAD -> main (protected branch hook declined)"), "other");
     assert.equal(classifyGitError("remote: error: cannot lock ref 'refs/heads/main': is at 1 but expected 2\n ! [remote rejected] HEAD -> main (failed to update ref)"), "rejected");
+    assert.equal(classifyGitError("fatal: '/x.git' does not appear to be a git repository\nfatal: Could not read from remote repository."), "other");
+    assert.equal(classifyGitError("remote: Repository not found.\nfatal: repository 'https://github.com/a/b.git/' not found"), "other");
     assert.equal(classifyGitError("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "auth");
   });
 

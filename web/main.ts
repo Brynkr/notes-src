@@ -10,6 +10,7 @@ import { PaneGrid } from "./ui/panes.ts";
 import { Sidebar } from "./ui/sidebar.ts";
 import { ConflictBanner, originalOf, StatusBar } from "./ui/statusbar.ts";
 import { QuickSwitcher } from "./ui/switcher.ts";
+import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 
 const workspace = new Workspace();
 const buffers = new BufferStore();
@@ -22,8 +23,9 @@ async function createNote(title: string, toSide = false): Promise<void> {
   try {
     const note = await api.create(title);
     buffers.adopt(note.path, note.text, note.hash);
-    if (toSide) workspace.openToSide(note.path);
-    else workspace.open(note.path);
+    // Cursor after the "# Title" line, ready to type.
+    if (toSide) workspace.openToSide(note.path, note.text.length);
+    else workspace.open(note.path, undefined, note.text.length);
     await refreshNotes();
     if (isNarrow()) setSidebarOpen(false);
     grid.focusActive();
@@ -161,6 +163,11 @@ const switcher = new QuickSwitcher({
   cancel: () => grid.focusActive(),
 });
 
+const settingsDialog = new SettingsDialog({
+  onClosed: () => grid.focusActive(),
+  beforeApply: () => buffers.flushAll(),
+});
+
 const statusbar = new StatusBar({ syncNow: () => void syncNow(), setLayout: (l) => workspace.setLayout(l) });
 const banner = new ConflictBanner(compareConflict);
 const sidebarToggle = h("button", {
@@ -171,12 +178,14 @@ const sidebarToggle = h("button", {
   onclick: () => setSidebarOpen(!sidebarOpen()),
 });
 statusbar.el.prepend(sidebarToggle);
+statusbar.el.append(
+  h("button", { class: "icon-btn", title: `Settings (${isMac ? "⌘" : "Ctrl"}+,)`, "aria-label": "Settings", html: icons.gear, onclick: () => void settingsDialog.show() }),
+);
 
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
 const main = h("main", { class: "main" }, banner.el, grid.el, statusbar.el);
-const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el);
-document.getElementById("app")!.replaceWith(root);
+const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el);
 
 function showNewNote(): void {
   setSidebarOpen(true);
@@ -267,6 +276,9 @@ window.addEventListener(
       e.preventDefault();
       workspace.close(workspace.state.activePaneId);
       grid.focusActive();
+    } else if (mod && e.key === ",") {
+      e.preventDefault();
+      void settingsDialog.show();
     } else if (mod && e.key === "s") {
       e.preventDefault(); // never show the browser's "Save page" dialog
       void buffers.flushAll();
@@ -284,7 +296,7 @@ window.addEventListener("blur", () => setModHeld(false));
 // --- server events -------------------------------------------------------------
 
 let wasConnected = true;
-subscribe(
+const connectEvents = () => subscribe(
   (ev) => {
     switch (ev.type) {
       case "status":
@@ -298,6 +310,10 @@ subscribe(
         break;
       case "notes-changed":
         refreshNotesSoon();
+        break;
+      case "reconfigured":
+        // Another folder or sync setup: save what's open, then start fresh.
+        void buffers.flushAll().finally(() => location.reload());
         break;
     }
   },
@@ -348,15 +364,26 @@ window.addEventListener("pagehide", () => buffers.saveOnUnload());
 // --- boot ----------------------------------------------------------------------
 
 async function boot(): Promise<void> {
+  const placeholder = document.getElementById("app")!;
+  let info;
+  try {
+    info = await api.info();
+  } catch (err) {
+    placeholder.textContent = `Can't reach the notes server: ${(err as Error).message}`;
+    return;
+  }
+  if (!info.configured) {
+    const ssh = await api.settings().then((s) => s.sshPublicKey, () => null);
+    placeholder.classList.remove("booting");
+    renderSetup(placeholder, info, ssh);
+    return;
+  }
+  placeholder.replaceWith(root);
+  connectEvents();
+  statusbar.setMachine(info.machineName);
+  document.title = `Notes · ${info.machineName}`;
   narrowSidebarOpen = !workspace.active.notePath;
   applyChrome();
-  try {
-    const info = await api.info();
-    statusbar.setMachine(info.machineName);
-    document.title = `Notes · ${info.machineName}`;
-  } catch {
-    /* shown as disconnected */
-  }
   const recovered = await buffers.recoverStash();
   if (recovered) toast(`Recovered ${recovered} unsaved note${recovered === 1 ? "" : "s"} from the last session.`, "info");
   await refreshNotes();

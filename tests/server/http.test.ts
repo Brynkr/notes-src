@@ -12,20 +12,36 @@ import { tempDir } from "../helpers.ts";
 
 const status: SyncStatusDto = { state: "synced", lastSyncMs: 0, lastAttemptMs: 0, message: null, conflicts: [], ahead: 0 };
 
-async function start(passwordHash?: string) {
+async function start(passwordHash?: string, opts: { allowedHosts?: string[]; noRuntime?: boolean } = {}) {
   const dir = await tempDir("notes-http-");
   const store = new NoteStore({ root: dir, worktreeLock: new Queue(), machineName: "t" });
   const saved: string[][] = [];
-  const app = createApp({
+  const runtime = {
     store,
     search: new SearchIndex(":memory:"),
-    info: { machineName: "t", repoPath: dir, notesDir: ".", remote: "origin", branch: "main", version: "test" },
     status: () => status,
     syncNow: async () => status,
-    onFocus: () => undefined,
-    onSaved: (p) => saved.push(p),
+    focus: () => undefined,
+    saved: (p: string[]) => void saved.push(p),
+  };
+  const app = createApp({
+    runtime: () => (opts.noRuntime ? null : runtime),
+    info: () => ({
+      configured: !opts.noRuntime,
+      setupError: null,
+      machineName: "t",
+      repoPath: dir,
+      notesDir: ".",
+      remote: "origin",
+      branch: "main",
+      version: "test",
+      defaultRepoPath: dir,
+      platform: process.platform,
+      local: true,
+    }),
     host: "127.0.0.1",
-    passwordHash,
+    passwordHash: () => passwordHash,
+    allowedHosts: () => opts.allowedHosts ?? [],
     webDir: dir,
   });
   await new Promise<void>((r) => app.server.listen(0, "127.0.0.1", r));
@@ -87,15 +103,42 @@ describe("HTTP API", () => {
   });
 
   test("foreign Host header is rejected on loopback (DNS rebinding)", async () => {
-    const http = await import("node:http");
-    const code = await new Promise<number>((resolve) => {
-      const port = new URL(s.base).port;
-      http.get({ host: "127.0.0.1", port, path: "/api/notes", headers: { Host: "evil.example:80" } }, (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      });
+    assert.equal(await getWithHost(s.base, "evil.example:80"), 421);
+  });
+});
+
+async function getWithHost(base: string, host: string): Promise<number> {
+  const http = await import("node:http");
+  return new Promise<number>((resolve) => {
+    http.get({ host: "127.0.0.1", port: new URL(base).port, path: "/api/info", headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
     });
-    assert.equal(code, 421);
+  });
+}
+
+describe("HTTP host names and setup mode", () => {
+  test("an allowed host (e.g. Tailscale name) is accepted on loopback", async () => {
+    const s = await start(hashPassword("long enough pw"), { allowedHosts: ["pi.tail1234.ts.net"] });
+    try {
+      assert.equal(await getWithHost(s.base, "pi.tail1234.ts.net"), 401); // reachable, but needs the password
+      assert.equal(await getWithHost(s.base, "other.tail1234.ts.net"), 421);
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("without a notes folder, note endpoints ask for setup", async () => {
+    const s = await start(undefined, { noRuntime: true });
+    try {
+      const info = await (await fetch(`${s.base}/api/info`)).json();
+      assert.equal(info.configured, false);
+      const r = await fetch(`${s.base}/api/notes`);
+      assert.equal(r.status, 409);
+      assert.match((await r.json()).error, /Set up/);
+    } finally {
+      await s.close();
+    }
   });
 });
 
