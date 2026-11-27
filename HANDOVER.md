@@ -423,6 +423,16 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 
 **28 Nov 2026: no CI.** The owner doesn't want GitHub Actions used, for builds or tests, in any project. `.github/workflows/` (ci.yml, release.yml) was removed; testing is manual (`typecheck`, `test`, `test:ui`, `test:exe`), and release files are built locally (`npm run package`; `npm run exe` on Windows). What CI used to cover that now needs the owner's machines: tests on Windows/macOS, real installer runs there, and the Windows exe build.
 
+**Feedback (28 Nov 2026)**
+
+Baseline before changes: typecheck, build and all 74 unit tests pass on the owner's Windows PC (Node 26).
+
+- *Standing preference:* keep the current minimalist interface; change its look only when the owner explicitly asks.
+- *Toggle for underlining/spell check*: already built. The spell check toggle and the 16 themes are in the Appearance pop-out (top right); the owner had missed it and wants no change. No link-underline toggle (no preference given).
+- *16 themes choosable in settings*: already built (Appearance pop-out), as above.
+- *Programming-language highlighting and an "IDE mode"* (change; relaxes the .md/.txt-only folder guard): **decided: light IDE.** Notes mode stays the default; a toggle at the top right switches to IDE mode, which adds syntax highlighting per language (Python, C, C++, JS…), a file-tree sidebar and a git changes/diff panel. No real linters: stays dependency-free and works on the Pi. Code files are allowed in the folder. Not built yet.
+- *Home and Work modes* (change; answers open question 5): **decided:** `Home/` and `Work/` subfolders of the notes root, switched from the sidebar under the "Notes" heading. Existing root notes move into `Home/` in one commit (git keeps their history). Search, daily note, Trash and the quick switcher are scoped to the current mode. Not built yet.
+
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 
 **Verified in CI (27–28 Nov 2026, before CI was removed):** unit tests on Linux/Windows/macOS × Node 22/24, browser tests, and install → launch → uninstall on Windows (PowerShell installer, shortcuts, Apps & features entry), macOS (LaunchAgent, app bundle) and Linux. The first run found a Windows-only bug (corrupt index file locked while deleting) and an over-long default machine name; both are fixed.
