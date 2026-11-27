@@ -10,7 +10,7 @@ import { SearchIndex } from "../../server/search.ts";
 import type { SyncStatusDto } from "../../shared/types.ts";
 import { tempDir } from "../helpers.ts";
 
-const status: SyncStatusDto = { state: "synced", lastSyncMs: 0, lastAttemptMs: 0, message: null, conflicts: [], ahead: 0 };
+const status: SyncStatusDto = { state: "synced", lastSyncMs: 0, lastAttemptMs: 0, message: null, conflicts: [], ahead: 0, skipped: [] };
 
 async function start(passwordHash?: string, opts: { allowedHosts?: string[]; noRuntime?: boolean; onShutdown?: () => void } = {}) {
   const dir = await tempDir("notes-http-");
@@ -118,6 +118,24 @@ async function getWithHost(base: string, host: string): Promise<number> {
     });
   });
 }
+
+describe("password guessing", () => {
+  test("five wrong passwords lock the address out for a while, even with the right one", async () => {
+    const s = await start(hashPassword("correct horse"));
+    try {
+      const get = (pw: string) => fetch(`${s.base}/api/info`, { headers: { Authorization: "Basic " + Buffer.from(`u:${pw}`).toString("base64") } });
+      assert.equal((await fetch(`${s.base}/api/info`)).status, 401, "no credentials: not counted");
+      for (let i = 0; i < 4; i++) assert.equal((await get("nope")).status, 401);
+      assert.equal((await get("correct horse")).status, 200, "a success clears the count");
+      for (let i = 0; i < 5; i++) assert.equal((await get("nope")).status, 401);
+      const locked = await get("correct horse");
+      assert.equal(locked.status, 429);
+      assert.ok(Number(locked.headers.get("retry-after")) > 0);
+    } finally {
+      await s.close();
+    }
+  });
+});
 
 describe("HTTP host names and setup mode", () => {
   test("an allowed host (e.g. Tailscale name) is accepted on loopback", async () => {

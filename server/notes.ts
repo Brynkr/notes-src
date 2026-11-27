@@ -8,7 +8,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { NoteContent, NoteMeta, SaveResponse } from "../shared/types.ts";
+import type { NoteContent, NoteMeta, SaveResponse, TrashItem } from "../shared/types.ts";
 import type { Queue } from "./git.ts";
 import { extractTitle, parseTags, splitFrontMatter } from "../shared/markdown.ts";
 import { conflictCopyName, isConflictCopy } from "./sync.ts";
@@ -76,6 +76,10 @@ export function resolveNotePath(root: string, rel: string): string {
 }
 
 export class BadPath extends Error {}
+export class TooLarge extends Error {}
+
+/** Notes are text; anything bigger than this is almost certainly a mistake. */
+export const MAX_NOTE_BYTES = 2 * 1024 * 1024;
 export class Changed extends Error {}
 export class NotFound extends Error {}
 
@@ -127,8 +131,17 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return resolveNotePath(this.root, rel);
   }
 
-  /** All note paths under the root (recursive, skipping hidden folders). */
-  async walk(): Promise<string[]> {
+  /** Deleted notes live here (synced like any other file, hidden from the note list). */
+  get trashRoot(): string {
+    return path.join(this.root, TRASH_DIR);
+  }
+
+  resolveTrash(rel: string): string {
+    return resolveNotePath(this.trashRoot, rel);
+  }
+
+  /** All note paths under the root (recursive, skipping hidden folders such as .trash). */
+  async walk(root: string = this.root): Promise<string[]> {
     const out: string[] = [];
     const visit = async (dirAbs: string, dirRel: string) => {
       let entries;
@@ -144,7 +157,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         else if (e.isFile() && NOTE_EXT.test(e.name)) out.push(rel);
       }
     };
-    await visit(this.root, "");
+    await visit(root, "");
     return out.sort();
   }
 
@@ -232,6 +245,9 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
       let out = text;
       if (current && current.includes("\r\n")) out = out.replace(/\r?\n/g, "\r\n");
       const bytes = Buffer.from(out, "utf8");
+      if (bytes.length > MAX_NOTE_BYTES) {
+        throw new TooLarge(`This note is ${(bytes.length / 1048576).toFixed(1)} MB; notes are limited to 2 MB. Split it up or remove pasted data.`);
+      }
       const newHash = sha256(bytes);
       if (newHash === currentHash) {
         await this.remember(rel, abs, bytes);
@@ -266,24 +282,81 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
   }
 
   /**
-   * Delete a note. With `expectHash`, refuse (Changed) if the file no longer
-   * has that content: an edit made elsewhere wins over a stale delete.
+   * "Delete" a note: move it into the Trash, keeping its path, and return its
+   * path inside the Trash. With `expectHash`, refuse (Changed) if the file no
+   * longer has that content: an edit made elsewhere wins over a stale delete.
    */
-  async delete(rel: string, expectHash?: string): Promise<void> {
+  async trash(rel: string, expectHash?: string): Promise<string> {
     const abs = this.resolve(rel);
-    await this.lock.run(async () => {
-      if (expectHash) {
-        const current = await fs.readFile(abs).catch(() => null);
-        if (current && sha256(current) !== expectHash) throw new Changed("The note changed since you last saw it; it was not deleted.");
-      }
-      try {
-        await fs.rm(abs);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new NotFound(`No such note: ${rel}`);
+    return this.lock.run(async () => {
+      const current = await fs.readFile(abs).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") throw new NotFound(`No such note: ${rel}`);
         throw err;
-      }
+      });
+      if (expectHash && sha256(current) !== expectHash) throw new Changed("The note changed since you last saw it; it was not deleted.");
+      const dest = await uniquePath(this.trashRoot, rel, (i) => `-${i}`);
+      const destAbs = this.resolveTrash(dest);
+      await fs.mkdir(path.dirname(destAbs), { recursive: true });
+      await moveFile(abs, destAbs);
+      const now = this.now();
+      await fs.utimes(destAbs, now, now); // so the Trash sorts by when it was deleted
       this.known.delete(rel);
+      return dest;
     });
+  }
+
+  /** Notes in the Trash, most recently deleted first. */
+  async listTrash(): Promise<TrashItem[]> {
+    const items: TrashItem[] = [];
+    for (const rel of await this.walk(this.trashRoot)) {
+      const abs = this.resolveTrash(rel);
+      const [st, text] = await Promise.all([fs.stat(abs).catch(() => null), fs.readFile(abs, "utf8").catch(() => null)]);
+      if (!st || text === null) continue;
+      items.push({ path: rel, title: extractTitle(text, rel), deletedMs: st.mtimeMs, size: st.size });
+    }
+    return items.sort((a, b) => b.deletedMs - a.deletedMs);
+  }
+
+  async readTrash(rel: string): Promise<{ path: string; text: string }> {
+    const text = await fs.readFile(this.resolveTrash(rel), "utf8").catch(() => {
+      throw new NotFound(`Not in the Trash: ${rel}`);
+    });
+    return { path: rel, text };
+  }
+
+  /** Move a note back out of the Trash. If its old path is taken, it gets a "(restored)" name. Returns the new path. */
+  async restore(trashRel: string): Promise<string> {
+    const src = this.resolveTrash(trashRel);
+    return this.lock.run(async () => {
+      if (!(await exists(src))) throw new NotFound(`Not in the Trash: ${trashRel}`);
+      const target = await uniquePath(this.root, trashRel, (i) => (i === 2 ? " (restored)" : ` (restored ${i - 1})`));
+      const abs = this.resolve(target);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await moveFile(src, abs);
+      const now = this.now();
+      await fs.utimes(abs, now, now);
+      await this.remember(target, abs, await fs.readFile(abs));
+      await removeEmptyDirs(path.dirname(src), this.trashRoot);
+      return target;
+    });
+  }
+
+  /** Delete a note from the Trash for good (it remains in git history). */
+  async purge(trashRel: string): Promise<void> {
+    const abs = this.resolveTrash(trashRel);
+    await this.lock.run(async () => {
+      await fs.rm(abs).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") throw new NotFound(`Not in the Trash: ${trashRel}`);
+        throw err;
+      });
+      await removeEmptyDirs(path.dirname(abs), this.trashRoot);
+    });
+  }
+
+  async emptyTrash(): Promise<number> {
+    const n = (await this.walk(this.trashRoot)).length;
+    await this.lock.run(() => fs.rm(this.trashRoot, { recursive: true, force: true }));
+    return n;
   }
 
   private async remember(rel: string, abs: string, buf: Buffer): Promise<void> {
@@ -291,6 +364,40 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     if (!st) return;
     const hash = sha256(buf);
     this.known.set(rel, { hash, mtimeMs: st.mtimeMs, size: st.size, meta: metaFor(rel, buf.toString("utf8"), st.mtimeMs, hash) });
+  }
+}
+
+export const TRASH_DIR = ".trash";
+
+/** `rel` if free under root, else rel with suffix(2), suffix(3)… before the extension. */
+async function uniquePath(root: string, rel: string, suffix: (i: number) => string): Promise<string> {
+  const ext = path.posix.extname(rel);
+  const stem = rel.slice(0, rel.length - ext.length);
+  for (let i = 1; ; i++) {
+    const candidate = i === 1 ? rel : `${stem}${suffix(i)}${ext}`;
+    if (!(await exists(path.join(root, ...candidate.split("/"))))) return candidate;
+  }
+}
+
+async function moveFile(from: string, to: string): Promise<void> {
+  try {
+    await fs.rename(from, to);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    await fs.copyFile(from, to);
+    await fs.rm(from);
+  }
+}
+
+/** Remove now-empty folders from `dir` up to (and including) `stop`. */
+async function removeEmptyDirs(dir: string, stop: string): Promise<void> {
+  for (let d = dir; d.startsWith(stop); d = path.dirname(d)) {
+    try {
+      await fs.rmdir(d);
+    } catch {
+      return;
+    }
+    if (d === stop) return;
   }
 }
 

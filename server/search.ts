@@ -114,7 +114,7 @@ export class SearchIndex {
          LIMIT ?`,
       )
       .all(MARK_START, MARK_END, match, limit) as unknown as SearchHit[];
-    return rows.map((r) => ({ ...r }));
+    return rows.map((r) => ({ ...r, snippet: cleanSnippet(r.snippet) }));
   }
 
   /** Notes containing a wiki link to any of `keys` (see keysForNote), with the linking line. */
@@ -149,6 +149,23 @@ export function toFtsQuery(input: string): string {
     .slice(0, 12);
   if (!words.length) return "";
   return words.map((w, i) => `"${w.replace(/"/g, '""')}"${i === words.length - 1 ? "*" : ""}`).join(" ");
+}
+
+/**
+ * Strip Markdown syntax from a search snippet so it reads as plain text,
+ * keeping the match markers.
+ */
+export function cleanSnippet(s: string): string {
+  return s
+    .replace(/(^|\n)[ \t]*#{1,6}[ \t]+/g, "$1")
+    .replace(/(^|\n)[ \t]*>[ \t]?/g, "$1")
+    .replace(/(^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/g, "$1")
+    .replace(/\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]*))?\]\]/g, (_m, target: string, alias?: string) => alias || target)
+    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
+    .replace(/\*\*|__|~~|`+/g, "")
+    .replace(/(^|[\s(\u0001])\*(?=\S)|(?<=\S)\*(?=[\s).,;:!?\u0002]|$)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** The line containing `offset`, trimmed to a readable length around it. */

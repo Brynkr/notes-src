@@ -24,7 +24,12 @@ export interface SyncStatus {
   conflicts: string[];
   /** Local commits not yet on the remote. */
   ahead: number;
+  /** Files left out of commits because they're over MAX_SYNC_BYTES. */
+  skipped: { path: string; size: number }[];
 }
+
+/** Files bigger than this are never committed: they'd bloat the repo forever. */
+export const MAX_SYNC_BYTES = 5 * 1024 * 1024;
 
 export interface SyncHooks {
   /** Called before each push attempt. Tests use it to move the remote. */
@@ -48,11 +53,8 @@ export interface SyncOptions {
 
 type G = (args: string[], options?: RunOptions) => Promise<GitResult>;
 
-const CONFLICT_RE = / \(conflict \d{4}-\d{2}-\d{2}[^)]*\)(?: \d+)?\.[^/.]+$/;
-
-export function isConflictCopy(p: string): boolean {
-  return CONFLICT_RE.test(p);
-}
+export { isConflictCopy } from "../shared/conflicts.ts";
+import { isConflictCopy } from "../shared/conflicts.ts";
 
 function pad(n: number): string {
   return String(n).padStart(2, "0");
@@ -68,7 +70,7 @@ function sanitizeHost(h: string): string {
 
 export class SyncEngine extends EventEmitter {
   readonly opts: Required<Omit<SyncOptions, "hooks">> & { hooks: SyncHooks };
-  status: SyncStatus = { state: "syncing", lastSyncMs: null, lastAttemptMs: null, message: null, conflicts: [], ahead: 0 };
+  status: SyncStatus = { state: "syncing", lastSyncMs: null, lastAttemptMs: null, message: null, conflicts: [], ahead: 0, skipped: [] };
 
   private chain: Promise<unknown> = Promise.resolve();
   private queued: Promise<SyncStatus> | null = null;
@@ -174,13 +176,33 @@ export class SyncEngine extends EventEmitter {
 
   private async commitLocal(g: G): Promise<boolean> {
     const st = await g(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-    if (!st.stdout) return false;
+    if (!st.stdout) {
+      if (this.status.skipped.length) this.setStatus({ skipped: [] });
+      return false;
+    }
     await g(["add", "-A"]);
+    await this.unstageBigFiles(g);
     const staged = await g(["diff", "--cached", "--quiet"], { allowFail: true });
     if (staged.code === 0) return false;
     const stamp = this.opts.now().toISOString();
     await g(["commit", "-q", "-m", `auto: ${stamp} ${this.opts.machineName}`]);
     return true;
+  }
+
+  /** Leave files over MAX_SYNC_BYTES out of the commit (unstaged, untouched on disk). */
+  private async unstageBigFiles(g: G): Promise<void> {
+    const staged = splitZ((await g(["diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=AM"])).stdout);
+    const skipped: { path: string; size: number }[] = [];
+    for (const p of staged) {
+      const st = await fs.stat(path.join(this.opts.git.cwd, p)).catch(() => null);
+      if (st && st.size > MAX_SYNC_BYTES) skipped.push({ path: p, size: st.size });
+    }
+    if (skipped.length) {
+      const hasHead = Boolean(await revParse(g, "HEAD"));
+      const paths = skipped.map((s) => s.path);
+      await g(hasHead ? ["reset", "-q", "--", ...paths] : ["rm", "-q", "--cached", "--", ...paths]);
+    }
+    if (skipped.length || this.status.skipped.length) this.setStatus({ skipped });
   }
 
   private async fetch(): Promise<void> {
@@ -202,9 +224,14 @@ export class SyncEngine extends EventEmitter {
           const behind = await count(g, `HEAD..${this.remoteRef}`);
           if (behind === 0) return;
         }
-        const args = ["merge", "--no-edit", "--quiet"];
+        // No rename detection: filenames never change, except moving a note to
+        // the Trash. With rename detection, an edit made elsewhere would follow
+        // the note into the Trash; without it, "edit wins over delete" keeps
+        // the edited note in place (and the old version stays in the Trash).
+        const args = ["merge", "--no-edit", "--quiet", "-X", "no-renames"];
         if (headBefore) args.push("--allow-unrelated-histories");
         args.push(this.remoteRef);
+        const theirs = await revParse(g, this.remoteRef);
         const res = await g(args, { allowFail: true });
         if (res.code !== 0) {
           const unmerged = await g(["ls-files", "-u", "-z"]);
@@ -220,6 +247,7 @@ export class SyncEngine extends EventEmitter {
             throw new Error(`Conflict resolution failed and the merge was aborted; nothing was lost. ${(err as Error).message}`);
           }
         }
+        if (headBefore && theirs) await this.keepEditedNotes(g, headBefore, theirs);
         const headAfter = await revParse(g, "HEAD");
         if (headAfter && headAfter !== headBefore) {
           const diffArgs = headBefore ? ["diff", "--name-only", "-z", headBefore, headAfter] : ["ls-files", "-z"];
@@ -228,6 +256,26 @@ export class SyncEngine extends EventEmitter {
         }
       }),
     );
+  }
+
+  /**
+   * "An edit wins over a delete", whatever git's rename detection did: any
+   * file modified on either side since the merge base that is missing after
+   * the merge (e.g. git followed a move-to-Trash and put the edit in the
+   * Trash copy) is brought back with that side's content.
+   */
+  private async keepEditedNotes(g: G, ours: string, theirs: string): Promise<void> {
+    const base = (await g(["merge-base", ours, theirs], { allowFail: true })).stdout.trim();
+    if (!base) return;
+    const present = new Set(splitZ((await g(["ls-files", "-z"])).stdout));
+    const restore = new Map<string, string>();
+    for (const side of [ours, theirs]) {
+      const modified = splitZ((await g(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=M", base, side])).stdout);
+      for (const p of modified) if (!present.has(p) && !restore.has(p)) restore.set(p, side);
+    }
+    if (!restore.size) return;
+    for (const [p, side] of restore) await g(["checkout", side, "--", p]);
+    await g(["commit", "-q", "-m", `auto: ${this.opts.now().toISOString()} ${this.opts.machineName} (kept ${restore.size} note${restore.size === 1 ? "" : "s"} edited elsewhere)`]);
   }
 
   private async abortMerge(g: G): Promise<void> {

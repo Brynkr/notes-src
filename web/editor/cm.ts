@@ -11,6 +11,7 @@ import { Annotation, EditorSelection, EditorState, Transaction, type Text } from
 import { drawSelection, EditorView, highlightActiveLine, keymap, placeholder, dropCursor } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { BufferStore, BufferView, NoteBuffer } from "../state/buffers.ts";
+import { taskCheckboxes } from "./tasks.ts";
 import { linkAtCursor, wikiLinks, type LinkHost } from "./wikilinks.ts";
 
 /** Marks transactions that replay another pane's edit, so they aren't echoed back. */
@@ -47,6 +48,8 @@ const theme = EditorView.theme({
   ".cm-panels": { backgroundColor: "var(--panel)", color: "var(--ink)", borderColor: "var(--line)" },
   ".cm-searchMatch": { backgroundColor: "var(--mark)" },
   ".cm-textfield, .cm-button": { fontFamily: "var(--ui-font)" },
+  ".cm-task": { display: "inline-block", verticalAlign: "-2px", marginRight: "1px" },
+  ".cm-task-box": { width: "15px", height: "15px", margin: "0", accentColor: "var(--accent)", cursor: "pointer" },
   ".cm-wikilink": { color: "var(--accent)", textDecoration: "underline", textDecorationColor: "var(--accent-soft)", textUnderlineOffset: "3px" },
   ".cm-wikilink-missing": { color: "var(--muted)", textDecorationStyle: "dashed", textDecorationColor: "var(--faint)" },
   ".cm-tooltip.cm-tooltip-autocomplete": {
@@ -121,6 +124,7 @@ export function createEditor(opts: {
           indentWithTab,
         ]),
         wikiLinks(opts.links),
+        taskCheckboxes(),
         theme,
         EditorView.contentAttributes.of({ spellcheck: "true", autocorrect: "on", autocapitalize: "sentences" }),
         EditorView.domEventHandlers({

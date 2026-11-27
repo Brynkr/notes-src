@@ -10,6 +10,7 @@ import { PaneGrid } from "./ui/panes.ts";
 import { Sidebar } from "./ui/sidebar.ts";
 import { ConflictBanner, originalOf, StatusBar } from "./ui/statusbar.ts";
 import { QuickSwitcher } from "./ui/switcher.ts";
+import { TrashDialog } from "./ui/trash.ts";
 import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 
 const workspace = new Workspace();
@@ -34,14 +35,32 @@ async function createNote(title: string, toSide = false): Promise<void> {
   }
 }
 
+/** Move a note to the Trash, with an Undo button. */
 async function deleteNote(path: string): Promise<void> {
-  // Close it here first, so the server's "deleted" event isn't reported as a remote change.
+  const title = notes.find((n) => n.path === path)?.title ?? path;
+  // Save any last keystrokes, then close it here first so the server's
+  // "deleted" event isn't reported as a remote change.
+  const b = buffers.get(path);
+  if (b) await buffers.flush(b);
   buffers.forget(path);
   workspace.noteGone(path);
   try {
-    await api.remove(path);
+    const { trashPath } = await api.remove(path);
     await refreshNotes();
-    toast("Note deleted. It stays in the repo's git history.", "info");
+    toast(`Moved “${title}” to the Trash.`, "info", [
+      {
+        label: "Undo",
+        run: async () => {
+          try {
+            const { path: restored } = await api.restoreTrash(trashPath);
+            await refreshNotes();
+            openNote(restored, false);
+          } catch (err) {
+            toast(`Couldn't undo: ${(err as Error).message}`, "error");
+          }
+        },
+      },
+    ], 10_000);
   } catch (err) {
     toast(`Couldn't delete: ${(err as Error).message}`, "error");
   }
@@ -110,10 +129,21 @@ async function syncNow(): Promise<void> {
 // --- layout ------------------------------------------------------------------
 
 const sidebar = new Sidebar({
+  showTrash: () => void trashDialog.show(),
+  today: openDailyNote,
   open: openNote,
   create: createNote,
   collapse: () => setSidebarOpen(false),
 });
+
+/** Today's note, titled YYYY-MM-DD (local date): open it, or create it. */
+function openDailyNote(): void {
+  const d = new Date();
+  const title = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const hit = notes.find((n) => n.title === title && !n.conflict);
+  if (hit) openNote(hit.path, false);
+  else void createNote(title);
+}
 
 /** Follow a wiki link: open the note, or create it if it doesn't exist yet. */
 function followLink(target: string, toSide: boolean): void {
@@ -163,13 +193,18 @@ const switcher = new QuickSwitcher({
   cancel: () => grid.focusActive(),
 });
 
+const trashDialog = new TrashDialog({
+  onRestored: (path) => void refreshNotes().then(() => openNote(path, false)),
+  onClosed: () => grid.focusActive(),
+});
+
 const settingsDialog = new SettingsDialog({
   onClosed: () => grid.focusActive(),
   beforeApply: () => buffers.flushAll(),
 });
 
 const statusbar = new StatusBar({ syncNow: () => void syncNow(), setLayout: (l) => workspace.setLayout(l) });
-const banner = new ConflictBanner(compareConflict);
+const banner = new ConflictBanner(compareConflict, (path) => notes.find((n) => n.path === path)?.title);
 const sidebarToggle = h("button", {
   class: "icon-btn sidebar-toggle",
   title: "Show or hide the note list",
@@ -185,7 +220,7 @@ statusbar.el.append(
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
 const main = h("main", { class: "main" }, banner.el, grid.el, statusbar.el);
-const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el);
+const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el);
 
 function showNewNote(): void {
   setSidebarOpen(true);
@@ -256,6 +291,9 @@ window.addEventListener(
     if (e.altKey && !mod && e.code === "KeyN") {
       e.preventDefault();
       showNewNote();
+    } else if (e.altKey && !mod && e.code === "KeyD") {
+      e.preventDefault();
+      openDailyNote();
     } else if (mod && !e.shiftKey && !e.altKey && (e.key === "p" || e.key === "o")) {
       e.preventDefault();
       if (switcher.isOpen) switcher.close(true);

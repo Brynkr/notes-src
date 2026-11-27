@@ -42,6 +42,8 @@ export interface SyncStatusDto {
   /** Notes-root-relative paths of conflict copies. */
   conflicts: string[];
   ahead: number;
+  /** Files left out of sync because they're too big (repo-relative path, bytes). */
+  skipped: { path: string; size: number }[];
 }
 
 export interface SearchHit {
@@ -49,6 +51,14 @@ export interface SearchHit {
   title: string;
   /** Snippet text with \u0001 ... \u0002 around matches. Escape it, then replace the markers. */
   snippet: string;
+}
+
+export interface TrashItem {
+  /** Path inside the Trash; it's the note's original path (plus "-2" etc. if needed). */
+  path: string;
+  title: string;
+  deletedMs: number;
+  size: number;
 }
 
 export interface Backlink {

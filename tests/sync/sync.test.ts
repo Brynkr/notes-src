@@ -123,6 +123,34 @@ describe("sync scenarios (HANDOVER 13)", () => {
     assertConverged(A, B);
   });
 
+  test("5b. A moves a note to the Trash while B edits it: the edit stays in place", async () => {
+    const { A, B } = await pair({ "a.md": "# A\n\noriginal\n", "keep.md": "# K\n" });
+    // A trashes it (what NoteStore.trash does on disk).
+    A.write(".trash/a.md", A.read("a.md"));
+    A.rm("a.md");
+    B.write("a.md", "# A\n\nedited on B\n");
+    await A.sync();
+    assert.equal((await B.sync()).state, "synced");
+    await A.sync();
+    for (const m of [A, B]) {
+      assert.equal(m.read("a.md"), "# A\n\nedited on B\n", `${m.name} keeps the edit in place`);
+      // Depending on git's rename handling the Trash copy holds the old or the
+      // edited text; either way nothing is lost and the note stays in place.
+      assert.ok(m.exists(".trash/a.md"), `${m.name} still has the Trash copy`);
+    }
+    assertConverged(A, B);
+  });
+
+  test("5c. a note trashed on A disappears on B and shows up in B's Trash", async () => {
+    const { A, B } = await pair({ "a.md": "# A\n", "keep.md": "# K\n" });
+    A.write(".trash/a.md", A.read("a.md"));
+    A.rm("a.md");
+    await A.sync();
+    await B.sync();
+    assert.equal(B.exists("a.md"), false);
+    assert.equal(B.read(".trash/a.md"), "# A\n");
+  });
+
   test("6. A and B create different notes at the same moment: both survive", async () => {
     const { A, B } = await pair({ "x.md": "# x\n" });
     A.write("20261127-120000-from-a.md", "# From A\n");
@@ -228,6 +256,23 @@ describe("sync scenarios (HANDOVER 13)", () => {
     fail = false;
     assert.equal((await B.sync()).state, "conflict");
     assertNoMarkers(B);
+  });
+
+  test("files over 5 MB are left out of sync, everything else syncs", async () => {
+    const { A, B } = await pair();
+    A.write("big-video.mp4", "x".repeat(6 * 1024 * 1024));
+    A.write("a.md", "# A\n\nsmall edit\n");
+    const st = await A.sync();
+    assert.equal(st.state, "synced");
+    assert.deepEqual(st.skipped.map((f) => f.path), ["big-video.mp4"]);
+    assert.ok(A.exists("big-video.mp4"), "left alone on disk");
+    await B.sync();
+    assert.equal(B.read("a.md"), "# A\n\nsmall edit\n");
+    assert.equal(B.exists("big-video.mp4"), false);
+    // Once it's gone, the warning clears.
+    A.rm("big-video.mp4");
+    A.write("a.md", "# A\n\nanother\n");
+    assert.deepEqual((await A.sync()).skipped, []);
   });
 
   test("no remote configured: commits locally and reports local", async () => {

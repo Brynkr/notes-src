@@ -64,9 +64,46 @@ describe("NoteStore", () => {
     const list = await store.list();
     assert.deepEqual(list.map((m) => m.title).sort(), ["First note", "First note"]);
     assert.equal((await store.read(n.path)).hash, n.hash);
-    await store.delete(n.path);
+    await store.trash(n.path);
     assert.equal(fs.existsSync(path.join(dir, n.path)), false);
     await assert.rejects(store.read(n.path), /No such note/);
+  });
+
+  test("Trash: move, list, read, restore, purge, empty", async () => {
+    const a = await store.create("Alpha");
+    fs.mkdirSync(path.join(dir, "sub"));
+    await store.write("sub/b.md", "# Beta\n", null);
+    assert.equal(await store.trash(a.path), a.path);
+    assert.equal(await store.trash("sub/b.md"), "sub/b.md");
+    assert.deepEqual((await store.list()).map((m) => m.path), [], "trashed notes leave the list");
+    const trash = await store.listTrash();
+    assert.deepEqual(trash.map((t) => t.title).sort(), ["Alpha", "Beta"]);
+    assert.equal((await store.readTrash("sub/b.md")).text, "# Beta\n");
+
+    // Same name trashed twice keeps both.
+    await store.write("sub/b.md", "# Beta two\n", null);
+    assert.equal(await store.trash("sub/b.md"), "sub/b-2.md");
+
+    // Restoring onto a path that's taken again gets a "(restored)" name.
+    await store.write("sub/b.md", "# Beta three\n", null);
+    assert.equal(await store.restore("sub/b.md"), "sub/b (restored).md");
+    assert.equal(fs.readFileSync(path.join(dir, "sub", "b (restored).md"), "utf8"), "# Beta\n");
+    assert.equal(await store.restore(a.path), a.path);
+    assert.ok((await store.list()).some((m) => m.path === a.path));
+
+    await store.purge("sub/b-2.md");
+    assert.deepEqual(await store.listTrash(), []);
+    assert.equal(fs.existsSync(path.join(dir, ".trash")), false, "empty trash folders are tidied up");
+    await store.trash(a.path);
+    assert.equal(await store.emptyTrash(), 1);
+    await assert.rejects(store.restore(a.path), /Not in the Trash/);
+    assert.throws(() => store.resolveTrash("../escape.md"));
+  });
+
+  test("trashing with a stale hash is refused", async () => {
+    const { hash } = await store.write("x.md", "# X\n", null);
+    await store.write("x.md", "# X edited\n", hash);
+    await assert.rejects(store.trash("x.md", hash), /changed since/);
   });
 
   test("front matter round-trips byte for byte", async () => {
@@ -111,6 +148,11 @@ describe("NoteStore", () => {
     fs.rmSync(path.join(dir, "x.md"));
     await store.list();
     assert.deepEqual(deleted, ["x.md"]);
+  });
+
+  test("notes over 2 MB are refused", async () => {
+    await assert.rejects(store.write("huge.md", "x".repeat(2 * 1024 * 1024 + 1), null), /limited to 2 MB/);
+    assert.equal(fs.existsSync(path.join(dir, "huge.md")), false);
   });
 
   test("no temp files are left behind", async () => {

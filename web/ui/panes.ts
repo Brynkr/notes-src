@@ -1,5 +1,6 @@
 // The main area: a CSS grid of 1-4 panes, each with a header and an editor.
 
+import { conflictInfo, originalOf } from "../../shared/conflicts.ts";
 import { extractTitle } from "../../shared/markdown.ts";
 import type { Backlink } from "../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
@@ -31,13 +32,13 @@ class Pane {
   private readonly body: HTMLElement;
   private readonly deleteBtn: HTMLButtonElement;
   private readonly backlinksEl: HTMLElement;
+  private readonly conflictEl: HTMLElement;
   private backlinkSeq = 0;
   private editor: PaneEditor | null = null;
   private buffer: NoteBuffer | null = null;
   notePath: string | null = null;
   private loadSeq = 0;
   private titleFrame = 0;
-  private deleteArmed: ReturnType<typeof setTimeout> | null = null;
   private readonly deps: PaneDeps;
 
   constructor(id: string, deps: PaneDeps) {
@@ -47,13 +48,14 @@ class Pane {
     this.dotEl = h("span", { class: "dirty-dot", "aria-hidden": "true" });
     this.deleteBtn = h("button", {
       class: "icon-btn pane-delete",
-      title: "Delete note",
-      "aria-label": "Delete note",
+      title: "Move to Trash",
+      "aria-label": "Move to Trash",
       html: icons.trash,
       onclick: () => this.onDelete(),
     });
     this.body = h("div", { class: "pane-body" });
     this.backlinksEl = h("footer", { class: "backlinks", hidden: true });
+    this.conflictEl = h("div", { class: "conflict-strip", hidden: true });
     this.el = h(
       "section",
       { class: "pane", "data-pane": id, onpointerdown: () => deps.workspace.setActive(id) },
@@ -86,8 +88,31 @@ class Pane {
           },
         }),
       ),
+      this.conflictEl,
       this.body,
       this.backlinksEl,
+    );
+  }
+
+  /** For a conflict copy: say what it is, and offer "open original" / "done". */
+  private renderConflictStrip(): void {
+    const path = this.notePath;
+    const info = path ? conflictInfo(path) : null;
+    this.conflictEl.hidden = !info;
+    if (!path || !info) return;
+    const original = originalOf(path);
+    const originalNote = this.deps.links.notes().find((n) => n.path === original);
+    const openBtn = originalNote
+      ? h("button", { type: "button", class: "btn btn-small", onclick: () => this.deps.openNote(original, true) }, "Open original beside it")
+      : "";
+    this.conflictEl.replaceChildren(
+      h(
+        "span",
+        { class: "conflict-text" },
+        `Conflict copy: the version of “${originalNote?.title ?? original}” from ${info.host || "another device"} (${info.date}). Copy anything you want into the original, then:`,
+      ),
+      openBtn,
+      h("button", { type: "button", class: "btn btn-small btn-primary", onclick: () => this.deps.deleteNote(path) }, "Done, move copy to Trash"),
     );
   }
 
@@ -170,6 +195,7 @@ class Pane {
     this.notePath = state.notePath;
     this.teardown();
     void this.loadBacklinks();
+    this.renderConflictStrip();
     if (!state.notePath) return this.showEmpty();
     this.body.replaceChildren(h("div", { class: "pane-loading" }, "Opening…"));
     let buffer: NoteBuffer;
@@ -244,23 +270,7 @@ class Pane {
   }
 
   private async onDelete(): Promise<void> {
-    const path = this.notePath;
-    if (!path) return;
-    if (!this.deleteArmed) {
-      this.deleteBtn.classList.add("armed");
-      this.deleteBtn.textContent = "Delete?";
-      this.deleteArmed = setTimeout(() => this.disarm(), 3000);
-      return;
-    }
-    this.disarm();
-    await this.deps.deleteNote(path);
-  }
-
-  private disarm(): void {
-    if (this.deleteArmed) clearTimeout(this.deleteArmed);
-    this.deleteArmed = null;
-    this.deleteBtn.classList.remove("armed");
-    this.deleteBtn.innerHTML = icons.trash;
+    if (this.notePath) await this.deps.deleteNote(this.notePath);
   }
 
   private teardown(): void {

@@ -1,6 +1,7 @@
 // Status bar (sync state, Sync now, layout picker) and the conflict banner.
 
 import type { SyncStatusDto } from "../../shared/types.ts";
+import { conflictInfo, originalOf } from "../../shared/conflicts.ts";
 import { PRESETS, type LayoutPreset } from "../state/workspace.ts";
 import { h, icons, layoutIcon, relativeTime } from "./dom.ts";
 
@@ -113,6 +114,12 @@ export class StatusBar {
           detail = s.message ?? "";
       }
     }
+    if (s?.skipped.length && this.connected && state !== "error") {
+      const names = s.skipped.map((f) => `${f.path} (${(f.size / 1048576).toFixed(1)} MB)`).join(", ");
+      if (state === "synced") state = "warn";
+      label += ` · ${s.skipped.length} file${s.skipped.length === 1 ? "" : "s"} not synced`;
+      detail = `Over 5 MB, so kept on this device only: ${names}. Move big files out of the notes folder.`;
+    }
     if (this.saveError && this.connected) {
       state = "error";
       detail = this.saveError;
@@ -130,9 +137,11 @@ export class StatusBar {
 export class ConflictBanner {
   readonly el: HTMLElement;
   private readonly open: (copy: string) => void;
+  private readonly titleOf: (path: string) => string | undefined;
 
-  constructor(open: (copy: string) => void) {
+  constructor(open: (copy: string) => void, titleOf: (path: string) => string | undefined) {
     this.open = open;
+    this.titleOf = titleOf;
     this.el = h("div", { class: "banner", hidden: true, role: "region", "aria-label": "Conflicts" });
   }
 
@@ -141,8 +150,12 @@ export class ConflictBanner {
     if (!conflicts.length) return;
     this.el.replaceChildren(
       h("strong", {}, conflicts.length === 1 ? "A note changed in two places." : `${conflicts.length} notes changed in two places.`),
-      h("span", { class: "banner-text" }, " Both versions were kept. Compare, copy what you need into the original, then delete the copy: "),
-      ...conflicts.map((c) => h("button", { class: "chip", title: c, onclick: () => this.open(c) }, shortName(c))),
+      h("span", { class: "banner-text" }, " Both versions were kept. Open one to compare and tidy up: "),
+      ...conflicts.map((c) => {
+        const info = conflictInfo(c);
+        const title = this.titleOf(originalOf(c)) ?? shortName(c);
+        return h("button", { class: "chip", title: c, onclick: () => this.open(c) }, info?.host ? `${title} (from ${info.host})` : title);
+      }),
     );
   }
 }
@@ -152,7 +165,4 @@ function shortName(p: string): string {
   return base.replace(/\.md$/, "");
 }
 
-/** "x (conflict 2026-11-27 pi).md" -> "x.md" */
-export function originalOf(copy: string): string {
-  return copy.replace(/ \(conflict \d{4}-\d{2}-\d{2}[^)]*\)(?: \d+)?(\.[^/.]+)$/, "$1");
-}
+export { originalOf };

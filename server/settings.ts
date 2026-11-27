@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Git, GitError } from "./git.ts";
-import { DEFAULT_GITIGNORE } from "./runtime.ts";
+import { writeRepoDefaults } from "./runtime.ts";
 
 export class SettingsError extends Error {}
 
@@ -183,7 +183,7 @@ export async function setupRepo(opts: { repoPath: string; remoteUrl: string | nu
         await git.run(["checkout", "-q", "-B", branch, `${remote}/${branch}`]);
       }
     }
-    if (!fs.existsSync(path.join(repoPath, ".gitignore"))) fs.writeFileSync(path.join(repoPath, ".gitignore"), DEFAULT_GITIGNORE);
+    writeRepoDefaults(repoPath);
     return "Cloned your notes repository.";
   }
 
@@ -200,7 +200,7 @@ export async function setupRepo(opts: { repoPath: string; remoteUrl: string | nu
       );
     }
     await git.run(["init", "-q", "-b", branch]);
-    if (!fs.existsSync(path.join(repoPath, ".gitignore"))) fs.writeFileSync(path.join(repoPath, ".gitignore"), DEFAULT_GITIGNORE);
+    writeRepoDefaults(repoPath);
     message = "Created a new notes folder.";
   } else {
     message = "Using the existing git repository in that folder.";

@@ -29,7 +29,7 @@ import type {
   SyncStatusDto,
 } from "../shared/types.ts";
 import { isLoopback, verifyPassword } from "./config.ts";
-import { BadPath, Changed, NotFound, type NoteStore } from "./notes.ts";
+import { BadPath, Changed, NotFound, TooLarge, type NoteStore } from "./notes.ts";
 import type { SearchIndex } from "./search.ts";
 import { SettingsError } from "./settings.ts";
 
@@ -78,7 +78,7 @@ const MIME: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 
-const MAX_BODY = 5 * 1024 * 1024;
+const MAX_BODY = 8 * 1024 * 1024; // JSON-escaped text of a 2 MB note can be larger than 2 MB
 
 export class HttpError extends Error {
   readonly status: number;
@@ -97,6 +97,35 @@ export function createApp(ctx: AppContext) {
   function broadcast(ev: ServerEvent): void {
     const data = `data: ${JSON.stringify(ev)}\n\n`;
     for (const res of clients) res.write(data);
+  }
+
+  // --- slow down password guessing ------------------------------------------
+  // After 5 wrong passwords from one address, refuse that address for 30 s,
+  // doubling with each further miss (max 15 min). Success clears it.
+  const failures = new Map<string, { count: number; until: number }>();
+  const FREE_TRIES = 5;
+
+  function clientKey(req: http.IncomingMessage): string {
+    const addr = req.socket.remoteAddress ?? "";
+    // Behind `tailscale serve` everything arrives from loopback; use the forwarded address.
+    if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(addr)) {
+      const fwd = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+      if (fwd) return fwd;
+    }
+    return addr;
+  }
+
+  function lockedFor(key: string): number {
+    const f = failures.get(key);
+    return f && f.until > Date.now() ? Math.ceil((f.until - Date.now()) / 1000) : 0;
+  }
+
+  function recordFailure(key: string): void {
+    const f = failures.get(key) ?? { count: 0, until: 0 };
+    f.count++;
+    if (f.count >= FREE_TRIES) f.until = Date.now() + Math.min(15 * 60_000, 30_000 * 2 ** (f.count - FREE_TRIES));
+    failures.set(key, f);
+    if (failures.size > 1000) failures.delete(failures.keys().next().value as string);
   }
 
   function checkAuth(req: http.IncomingMessage): boolean {
@@ -187,14 +216,39 @@ export function createApp(ctx: AppContext) {
         return send(res, 201, note);
       }
       case "DELETE /api/note": {
+        // Moves the note to the Trash.
         const r = rt();
         const p = url.searchParams.get("path") ?? "";
-        await r.store.delete(p, url.searchParams.get("hash") ?? undefined);
+        const trashPath = await r.store.trash(p, url.searchParams.get("hash") ?? undefined);
         r.search.remove(p);
         r.saved([]);
         broadcast({ type: "note-deleted", path: p });
         broadcast({ type: "notes-changed" });
+        return send(res, 200, { ok: true, trashPath });
+      }
+      case "GET /api/trash":
+        return send(res, 200, await rt().store.listTrash());
+      case "GET /api/trash/note":
+        return send(res, 200, await rt().store.readTrash(url.searchParams.get("path") ?? ""));
+      case "POST /api/trash/restore": {
+        const r = rt();
+        const body = await readJson<{ path?: string }>(req);
+        const restored = await r.store.restore(String(body.path ?? ""));
+        r.saved([restored]);
+        broadcast({ type: "notes-changed" });
+        return send(res, 200, { path: restored });
+      }
+      case "DELETE /api/trash": {
+        const r = rt();
+        await r.store.purge(url.searchParams.get("path") ?? "");
+        r.saved([]);
         return send(res, 200, { ok: true });
+      }
+      case "POST /api/trash/empty": {
+        const r = rt();
+        const count = await r.store.emptyTrash();
+        r.saved([]);
+        return send(res, 200, { count });
       }
       case "GET /api/search": {
         const q = url.searchParams.get("q") ?? "";
@@ -316,10 +370,21 @@ export function createApp(ctx: AppContext) {
         setTimeout(() => ctx.shutdown?.(), 50);
         return;
       }
-      if (!checkAuth(req)) {
-        res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Notes", charset="UTF-8"', "Content-Type": "text/plain" });
-        res.end("Password required");
-        return;
+      if (ctx.passwordHash()) {
+        const key = clientKey(req);
+        const wait = lockedFor(key);
+        if (wait) {
+          res.writeHead(429, { "Retry-After": String(wait), "Content-Type": "text/plain" });
+          res.end(`Too many wrong passwords. Try again in ${wait} seconds.`);
+          return;
+        }
+        if (!checkAuth(req)) {
+          if (req.headers.authorization) recordFailure(key);
+          res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Notes", charset="UTF-8"', "Content-Type": "text/plain" });
+          res.end("Password required");
+          return;
+        }
+        failures.delete(key);
       }
       if (url.pathname.startsWith("/api/")) await api(req, res, url);
       else serveStatic(req, res, url);
@@ -332,6 +397,7 @@ export function createApp(ctx: AppContext) {
       if (err instanceof BadPath || err instanceof SettingsError) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
       if (err instanceof Changed) return send(res, 409, { error: err.message });
+      if (err instanceof TooLarge) return send(res, 413, { error: err.message });
       console.error(err);
       send(res, 500, { error: (err as Error).message });
     }

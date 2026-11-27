@@ -15,6 +15,7 @@ import type {
   SettingsResult,
   SetupRequest,
   SyncStatusDto,
+  TrashItem,
 } from "../shared/types.ts";
 
 export class ApiError extends Error {
@@ -60,7 +61,13 @@ export const api = {
   read: (path: string) => call<NoteContent>("GET", `/api/note?path=${q(path)}`),
   save: (req: SaveRequest, keepalive = false) => call<SaveResponse>("PUT", "/api/note", req, { keepalive }),
   create: (title: string) => call<NoteContent>("POST", "/api/notes", { title }),
-  remove: (path: string) => call<{ ok: true }>("DELETE", `/api/note?path=${q(path)}`),
+  /** Moves the note to the Trash. */
+  remove: (path: string) => call<{ ok: true; trashPath: string }>("DELETE", `/api/note?path=${q(path)}`),
+  trash: () => call<TrashItem[]>("GET", "/api/trash"),
+  readTrash: (path: string) => call<{ path: string; text: string }>("GET", `/api/trash/note?path=${q(path)}`),
+  restoreTrash: (path: string) => call<{ path: string }>("POST", "/api/trash/restore", { path }),
+  purgeTrash: (path: string) => call<{ ok: true }>("DELETE", `/api/trash?path=${q(path)}`),
+  emptyTrash: () => call<{ count: number }>("POST", "/api/trash/empty", {}),
   backlinks: (path: string) => call<Backlink[]>("GET", `/api/backlinks?path=${q(path)}`),
   search: (query: string) => call<SearchHit[]>("GET", `/api/search?q=${q(query)}`),
   sync: () => call<SyncStatusDto>("POST", "/api/sync", {}),

@@ -176,7 +176,8 @@ export class BufferStore {
         b.lastError = (err as Error).message;
         // Keep the text and retry with backoff. Never drop an edit.
         b.retryMs = Math.min(30_000, b.retryMs ? b.retryMs * 2 : 1_000);
-        if (!(err instanceof ApiError && err.status === 400)) this.scheduleSave(b, b.retryMs);
+        // Retry unless the server said the request itself can't succeed.
+        if (!(err instanceof ApiError && (err.status === 400 || err.status === 413))) this.scheduleSave(b, b.retryMs);
         this.emit("error", `Couldn't save "${b.path}": ${b.lastError}`);
       }
     })();

@@ -5,6 +5,8 @@ import { api } from "../api.ts";
 import { h, icons, modKey, relativeTime } from "./dom.ts";
 
 export interface SidebarDeps {
+  showTrash: () => void;
+  today: () => void;
   open: (path: string, toSide: boolean) => void;
   create: (title: string) => Promise<void>;
   collapse: () => void;
@@ -70,6 +72,8 @@ export class Sidebar {
         { class: "sidebar-head" },
         h("span", { class: "brand" }, "Notes"),
         this.countEl,
+        h("button", { class: "icon-btn", title: "Today's note (Alt+D)", "aria-label": "Today's note", html: icons.today, onclick: () => this.deps.today() }),
+        h("button", { class: "icon-btn", title: "Trash", "aria-label": "Trash", html: icons.trash, onclick: () => this.deps.showTrash() }),
         h("button", { class: "icon-btn", title: `New note (Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
         h("button", { class: "icon-btn hide-wide", title: "Hide sidebar", "aria-label": "Hide sidebar", html: icons.sidebar, onclick: () => this.deps.collapse() }),
       ),

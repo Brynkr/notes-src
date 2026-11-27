@@ -47,6 +47,7 @@ export const icons = {
   sync: svg('<path d="M13 8a5 5 0 0 1-8.5 3.5M3 8a5 5 0 0 1 8.5-3.5"/><path d="M11.5 1.8v2.7H8.8M4.5 14.2v-2.7h2.7"/>'),
   sidebar: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/>'),
   search: svg('<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2L13.5 13.5"/>'),
+  today: svg('<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/><circle cx="8" cy="10" r="1.1" fill="currentColor" stroke="none"/>'),
   gear: svg('<circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7L3.6 3.6"/>'),
 };
 

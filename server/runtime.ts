@@ -23,6 +23,24 @@ desktop.ini
 *.swp
 `;
 
+/** Same line endings on every machine (Windows git otherwise converts them). */
+export const DEFAULT_GITATTRIBUTES = `# Written by notes-app: keep line endings identical on every machine.
+*.md text eol=lf
+*.markdown text eol=lf
+*.txt text eol=lf
+`;
+
+/** Add .gitignore/.gitattributes to a repo we just created or cloned, if missing. */
+export function writeRepoDefaults(dir: string): void {
+  for (const [name, text] of [
+    [".gitignore", DEFAULT_GITIGNORE],
+    [".gitattributes", DEFAULT_GITATTRIBUTES],
+  ]) {
+    const p = path.join(dir, name);
+    if (!fs.existsSync(p)) fs.writeFileSync(p, text);
+  }
+}
+
 export interface RuntimeEvents {
   event: [ServerEvent];
 }
@@ -128,6 +146,7 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
       message: this.cfg.sync ? s.message : "Sync is turned off.",
       conflicts,
       ahead: s.ahead,
+      skipped: s.skipped,
     };
   }
 
@@ -156,7 +175,6 @@ export async function ensureRepo(cfg: Config): Promise<string> {
   const top = await probe.run(["rev-parse", "--show-toplevel"], { allowFail: true });
   if (top.code === 0) return path.resolve(top.stdout.trim());
   await probe.run(["init", "-q", "-b", cfg.branch]);
-  const gi = path.join(cfg.repoPath, ".gitignore");
-  if (!fs.existsSync(gi)) fs.writeFileSync(gi, DEFAULT_GITIGNORE);
+  writeRepoDefaults(cfg.repoPath);
   return path.resolve(cfg.repoPath);
 }
