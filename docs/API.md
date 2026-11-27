@@ -1,6 +1,6 @@
 # HTTP API and sync protocol
 
-The server that runs the web UI also exposes a small JSON API. The web UI uses it, and so can any client that can't run git: a script, a phone app, or **KindleHub**. Such clients normally talk to the Raspberry Pi, and the Pi syncs with GitHub through git.
+The server that runs the web UI also exposes a small JSON API. The web UI uses it, and so can any client that can't run git: a script, a phone app, or **KindleHub** (a KOReader plugin on a Kindle). Such clients normally talk to the Raspberry Pi, and the Pi syncs with GitHub through git.
 
 ```
 Windows / macOS / Linux desktops ──git──┐
@@ -33,8 +33,11 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `POST /api/notes` | `{ title }` | `{ path, text, hash }` (server picks the filename) |
 | `DELETE /api/note?path=P[&hash=H]` | | `{ ok: true }`, or `409` if `hash` given and the note changed |
 | `GET /api/search?q=Q` | | `[{ path, title, snippet }]`; matches in `snippet` are wrapped in `\u0001`…`\u0002` |
+| `GET /api/backlinks?path=P` | | `[{ path, title, context }]`: notes that `[[link]]` to P, with the linking line |
 | `POST /api/sync` | `{}` | runs a git sync now (waits for it), returns sync status |
 | `GET /api/events` | | Server-Sent Events stream (see below) |
+
+The web UI also uses `GET/PUT /api/settings`, `POST /api/settings/test-remote`, `POST /api/settings/password` and `POST /api/setup`; other clients shouldn't need them. Until a notes folder is set up, note endpoints return `409` and `GET /api/info` has `configured: false`.
 
 `NoteMeta`:
 
@@ -71,6 +74,7 @@ Line endings: send `\n`. If the file on disk uses CRLF, the server writes CRLF.
 - `{ "type": "note-changed", "path": "…", "hash": "…" }`: content on disk changed
 - `{ "type": "note-deleted", "path": "…" }`
 - `{ "type": "notes-changed" }`: the list changed; re-fetch `/api/notes`
+- `{ "type": "reconfigured" }`: settings switched folder or sync setup; start over
 
 Offline-first clients don't need events. Polling `/api/notes` when you sync is enough.
 
@@ -89,3 +93,41 @@ Run this when the device gets wifi, and when a note is opened while online:
 **New notes made offline:** pick the filename yourself, `YYYYMMDD-HHMMSS-slug.md` in local time, slug lowercase `a-z0-9-` (max 50 chars, `untitled` if empty). Save with `PUT` and `baseHash: null`. Start the text with `# Title`, which the app uses as the title.
 
 A note that is edited on the Kindle, and also somewhere else before the Kindle syncs, ends up as the Kindle's text in the note plus a conflict copy holding the other text. That matches what git sync does between desktops.
+
+## Notes for a KOReader / Lua client (KindleHub)
+
+KOReader plugins run Lua with LuaSocket and LuaSec available, so the recipe above maps directly:
+
+- **HTTP:** `socket.http` (or `ssl.https` for `https://`) with `ltn12` sources and sinks. Send `Authorization: Basic <base64("notes:" .. password)>` on every request and `X-Notes-App: 1` on `PUT`/`POST`/`DELETE`. LuaSocket's `mime.b64` does the base64.
+- **JSON:** KOReader includes `rapidjson` (and `json`). Note text is UTF-8; send it unchanged.
+- **Wi-fi:** sync from the plugin's `onNetworkConnected` handler, and when a note is opened while `NetworkMgr:isOnline()`. Keep requests on a short timeout (`socket.http.TIMEOUT`), since Kindle wi-fi wakes slowly.
+- **Address:** at home use the Pi's LAN address (`http://192.168.x.y:4747`). The Kindle can't join Tailscale, so it syncs when it's back on the home network. That's fine: offline edits are kept and pushed on the next sync.
+- **Hashes:** you never need to compute one. Store the `hash` the server returns and send it back as `baseHash`.
+- **Storage:** keep one file per note under the plugin's data folder plus a small JSON index of `{ path, baseHash, dirty }`. Write the index after every successful step, so a sync interrupted by sleep or wi-fi loss resumes cleanly.
+- **Display:** titles come from `NoteMeta.title`; the body is Markdown. A plain-text view with the `#` headings is perfectly readable on e-ink.
+
+Minimal request sketch (Lua, untested; check names against the KOReader version on the device):
+
+```lua
+local http, ltn12 = require("socket.http"), require("ltn12")
+local json = require("rapidjson")
+local mime = require("mime")
+
+local BASE, AUTH = "http://192.168.1.20:4747", "Basic " .. mime.b64("notes:" .. password)
+
+local function call(method, path, body)
+  local out, payload = {}, body and json.encode(body) or nil
+  local _, code = http.request{
+    url = BASE .. path, method = method,
+    headers = { Authorization = AUTH, ["X-Notes-App"] = "1", ["Content-Type"] = "application/json",
+                ["Content-Length"] = payload and #payload or nil },
+    source = payload and ltn12.source.string(payload) or nil,
+    sink = ltn12.sink.table(out),
+  }
+  return code, (#out > 0) and json.decode(table.concat(out)) or nil
+end
+
+-- push one edited note
+local code, res = call("PUT", "/api/note", { path = note.path, text = note.text, baseHash = note.baseHash })
+if code == 200 then note.baseHash, note.dirty = res.hash, false end
+```

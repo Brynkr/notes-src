@@ -11,8 +11,10 @@ npm install
 npm run build        # esbuild -> dist/server.js + dist/web/
 npm run typecheck    # tsc --noEmit (TypeScript 7)
 npm test             # node:test, runs .ts directly; real git against temp repos
-npm run test:ui      # builds, then headless Chrome end-to-end (set CHROME=... if not found)
+npm run test:ui      # builds, then headless Chrome end-to-end, two suites (set CHROME=... if not found)
+npm run package      # release/*.zip + *.tar.gz with installers
 node dist/server.js --repo /tmp/some-notes --no-sync --open   # try it locally
+NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fresh, unconfigured (setup screen)
 ```
 
 ## Rules that matter most here
@@ -25,3 +27,6 @@ node dist/server.js --repo /tmp/some-notes --no-sync --open   # try it locally
 - The server has no runtime npm dependencies. Keep it that way unless there's a strong reason (say why).
 - Source files import with `.ts` extensions and use only erasable TypeScript syntax (no enums or parameter properties), so Node can run tests directly.
 - The owner's other clients (phone browser via the Pi, KindleHub later) depend on `docs/API.md`. Keep it in sync with `server/http.ts`.
+- Anything tied to a notes folder belongs in `NotesRuntime` (server/runtime.ts), so Settings can swap it at runtime.
+- Keep Node 22 compatibility: the owner's Raspberry Pi 2 is armv7, which has no Node 24 build.
+- Installers are bash/PowerShell; `bash -n installer/install.sh` at least, and rely on CI for Windows/macOS runs.

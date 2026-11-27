@@ -1,10 +1,10 @@
 # Notes
 
-Plain Markdown notes in a git repo, synced through GitHub. One small server gives you an editor in a window on your desktop, and the same editor in a browser from your Raspberry Pi (phone, tablet, any computer at home).
+Plain Markdown notes in a git repo, synced through GitHub. The same small app runs as a desktop app on Windows, macOS and Linux, and on a Raspberry Pi that serves it to your phone and other devices, at home or away.
 
 - Notes are ordinary `.md` files. Any editor can read them, and there's no lock-in.
 - Sync is automatic: commit, fetch, merge, push in the background. It never rebases, never leaves conflict markers in a note, and never throws away text. If the same lines changed in two places, you get both versions side by side.
-- Search across all notes, and split the screen into up to four panes. Works offline.
+- Quick switcher (Ctrl/⌘+P), full-text search, `[[wiki links]]` with backlinks, and split screen up to four panes. Works offline.
 
 ![Editor](docs/screenshot.png)
 
@@ -14,106 +14,123 @@ Plain Markdown notes in a git repo, synced through GitHub. One small server give
 Windows / macOS / Linux ──git──┐
                                ├── GitHub (your private notes repo)
 Raspberry Pi ───────────git────┘
-  serves the web UI to phones and browsers on your network,
-  and later KindleHub (see docs/API.md)
+  │  serves the same app over the network:
+  ├─ at home:      http://<pi>:4747       phone, tablet, KindleHub
+  └─ anywhere:     https://<pi>.<tailnet>.ts.net   (Tailscale)
 ```
 
-Every machine that runs the app is an ordinary git client of your notes repo. The Pi is one of them that also serves the UI to devices that can't run git.
+Every machine that runs the app is an ordinary git client of your notes repo. The Pi is one of them that also serves the app to devices that can't run git. See [docs/API.md](docs/API.md) for how KindleHub syncs.
 
-## Requirements
+## 1. Make the notes repository (once)
 
-- **Node.js 22.13 or newer** (24 LTS recommended): <https://nodejs.org>
-- **git** on the PATH (on Windows: Git for Windows)
-- A **private GitHub repo** for your notes (it can be empty), and `git push` already working from a terminal on each machine. The app uses whatever SSH key or credential helper is set up, and never asks for passwords itself.
+Create an **empty private repository** on GitHub, e.g. `notes` (<https://github.com/new>; don't add a README). Copy its URL: `git@github.com:YOU/notes.git` (SSH) or `https://github.com/YOU/notes.git` (HTTPS).
 
-## Build
+## 2. Install
+
+Download `notes-app-<version>.zip` from the repository's Releases page (or build it: `npm install && npm run package` → `release/`) and extract it.
+
+### Windows
+
+Double-click **Install Notes (Windows).cmd**. If Windows warns about an unknown publisher, choose *More info → Run anyway*.
+
+The installer offers to install Node.js and Git with winget if they're missing. Then it adds **Notes** to the Start menu, keeps sync running in the background from login, and registers an uninstaller under *Settings → Apps*. It installs for your user only, with no admin rights. Options: `-NoStartup`, `-NoLaunch`.
+
+When Notes opens, paste the repository URL and click **Test connection**. With an HTTPS URL, Git Credential Manager (part of Git for Windows) opens a GitHub sign-in the first time.
+
+### macOS / Linux
 
 ```sh
-npm install
-npm run build        # produces dist/ (server.js + web/). That folder is all you need to run it.
+./install.sh
 ```
 
-## Desktop (Windows, macOS, Linux)
+Adds Notes to your applications (macOS: `~/Applications/Notes.app`; Linux: the app menu) and runs sync in the background from login (a LaunchAgent on macOS, a systemd user service on Linux). It needs git (`xcode-select --install` on a Mac). If Node.js 22.13+ is missing, the installer offers to download a private, checksum-verified copy.
 
-1. Clone your notes repo somewhere, e.g. `git clone git@github.com:YOU/notes.git ~/notes`, and check that `git push` works there.
-2. Start the app once with your settings, saving them as the defaults:
-   ```sh
-   node dist/server.js --repo ~/notes --machine-name desktop --save --open
-   ```
-   On Windows use a path like `C:\Users\you\notes`.
-3. It opens at <http://localhost:4747>. In Chrome or Edge use **Install app** (address bar icon, or menu → Cast, save and share → Install page as app) to get its own window and taskbar icon.
-4. From then on, `node dist/server.js` is enough (or `npm start`).
-
-Start at login (optional):
-
-- **Windows:** press Win+R, type `shell:startup`, and add a shortcut with Target `"C:\Program Files\nodejs\node.exe" "C:\path\to\notes-app\dist\server.js"` and Run: Minimized.
-- **macOS / Linux:** a login item or a user systemd unit (see the Pi section; the same file works on Linux desktops).
-
-The server only listens on `127.0.0.1`, so nothing else on the network can reach it.
-
-## Raspberry Pi (web UI for your home network)
-
-Raspberry Pi OS 64-bit, Pi 3 or newer.
+### Raspberry Pi (home server)
 
 ```sh
-# 1. Node and git
-curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-sudo apt install -y nodejs git
-
-# 2. A key that can push to just your notes repo
-ssh-keygen -t ed25519 -C "pi notes" -f ~/.ssh/id_ed25519 -N ""
-cat ~/.ssh/id_ed25519.pub   # GitHub → your notes repo → Settings → Deploy keys → Add, tick "Allow write access"
-git clone git@github.com:YOU/notes.git ~/notes
-
-# 3. The app: build on your desktop, then copy dist/ across (no npm needed on the Pi)
-#    (on the desktop)  scp -r dist pi@raspberrypi.local:~/notes-app
-node ~/notes-app/server.js set-password
-node ~/notes-app/server.js --repo ~/notes --lan --machine-name pi --save
-
-# 4. Run it as a service that starts on boot
-mkdir -p ~/.config/systemd/user
-cp notes-app.service ~/.config/systemd/user/     # from deploy/ in this repo
-systemctl --user enable --now notes-app
-sudo loginctl enable-linger "$USER"              # keep running when you're logged out
-journalctl --user -u notes-app -f                # logs
+./install.sh --server               # home network only
+./install.sh --server --tailscale   # also reachable away from home (see below)
 ```
 
-Then open `http://raspberrypi.local:4747` (or the Pi's IP address) on your phone, sign in with the password, and use "Add to Home Screen".
+This asks for a password for the web UI, listens on your home network, creates an SSH key for GitHub, and starts at boot. Then, from any browser on your network, open the address it prints (e.g. `http://192.168.1.20:4747`). The setup page shows the Pi's SSH key: add it to your notes repo on GitHub (*Settings → Deploy keys → Add deploy key*, tick *Allow write access*). Then paste the repo's **SSH** URL and start.
 
-Keep it on your home network. Don't forward the port to the internet; for access away from home, use a VPN such as Tailscale. The password protects against other devices on your wifi, but plain HTTP is not encrypted.
+**Raspberry Pi 2 / 32-bit OS:** Node.js 24 no longer ships 32-bit ARM builds, but Node 22 (supported until April 2027) does, and Notes runs on it. If the Pi's Node is missing or too old, the installer fetches Node 22 for the Pi automatically. Notes used about 65 MB of memory with 300 notes in testing, so it fits alongside other services on a Pi 2's 1 GB.
+
+### Uninstall
+
+Windows: *Settings → Apps → Notes → Uninstall*. Elsewhere: `./uninstall.sh`. Your notes folder and settings are kept.
+
+## 3. Reaching the Pi from outside home (Tailscale)
+
+[Tailscale](https://tailscale.com) puts your devices on a private network that works from anywhere, with no port forwarding and nothing exposed to the internet.
+
+1. Install Tailscale on the Pi (`curl -fsSL https://tailscale.com/install.sh | sh`, then `sudo tailscale up`) and on your phone/laptop, signed in to the same account.
+2. In the Tailscale admin console, turn on **MagicDNS** and **HTTPS certificates** (*DNS* page).
+3. On the Pi: `./install.sh --server --tailscale` (or, if it's already installed: `tailscale serve --bg 4747` and add the Pi's `*.ts.net` name under *Settings → Access → Tailscale name(s)*).
+
+Then open `https://<pi-name>.<your-tailnet>.ts.net/` from anywhere. It's real HTTPS, so on a phone you can "Install app" / "Add to Home Screen" for a full-screen app. The password still applies.
+
+Don't forward port 4747 on your router, and don't use `tailscale funnel` (that publishes to the whole internet).
 
 ## Using it
 
 | | |
 | --- | --- |
-| New note | **+** in the sidebar, or **Alt+N** |
-| Search | **Ctrl/⌘+K**, arrow keys, Enter (Ctrl/⌘+Enter opens to the side) |
-| Open to the side | **Ctrl/⌘+click** a note, or **Ctrl/⌘+\\** |
-| Layouts | buttons at the bottom right: 1, 2 side by side, 2 stacked, 3, 4 |
-| Focus pane / close pane | **Alt+1…4** / **Alt+W** |
-| Save now / sync now | **Ctrl/⌘+S** / the ↻ button (both also happen automatically) |
+| Go to a note (fuzzy) | **Ctrl/⌘+P**. Type part of a title; Enter opens, Ctrl/⌘+Enter opens to the side, Shift+Enter creates a note with that title |
+| New note | **Alt+N**, or **+** in the sidebar |
+| Search inside notes | **Ctrl/⌘+K** |
+| Link to a note | type `[[` and pick a title. `[[Title|shown text]]` and `[[Title#Heading]]` work too |
+| Follow a link | **Ctrl/⌘+click** it (or **Alt+Enter** with the cursor on it). A link to a note that doesn't exist yet (dashed) creates it |
+| Backlinks | "Linked from N notes" under each note |
+| Split screen | **Ctrl/⌘+\\**, Ctrl/⌘+click a note, or the layout buttons at the bottom right. **Alt+1…4** focuses a pane, **Alt+W** closes it |
+| Settings | **Ctrl/⌘+,** or the gear at the bottom right |
+| Save / sync now | **Ctrl/⌘+S** / the ↻ button (both happen automatically) |
 
-Notes save as you type and sync about 8 seconds after you stop, every 3 minutes, when the window gets focus, and on exit.
+Notes save as you type and sync about 8 seconds after you stop typing, every 3 minutes, when the window gets focus, and on exit.
+
+Links point at a note's **title** (its first `# Heading`). Renaming a title doesn't update links to it; the old ones show as dashed (missing) until you fix them.
 
 **Conflicts:** if a note was changed in two places, the version you were editing stays in the note and the other one is saved next to it as `name (conflict 2026-11-27 laptop).md`. A banner lists these. Click one to open it beside the original, copy across what you want, then delete the copy.
 
 ## Settings
 
-Everything can be passed as flags (`node dist/server.js --help`) and saved with `--save` to:
+Everything is in the Settings dialog: notes folder, repository URL (with a connection test), sync timing, branch, this machine's name, who can connect (this computer / home network), Tailscale names, and the password. Changes apply immediately, except the network address and port, which apply after a restart.
 
-- Windows: `%APPDATA%\notes-app\config.json`
-- macOS: `~/Library/Application Support/notes-app/config.json`
-- Linux / Pi: `~/.config/notes-app/config.json`
+Where things live:
 
-The search index lives in the app-data folder. It's disposable and rebuilds itself if deleted. Window layout is remembered per browser.
+| | Windows | macOS | Linux / Pi |
+| --- | --- | --- | --- |
+| Settings | `%APPDATA%\notes-app\config.json` | `~/Library/Application Support/notes-app/config.json` | `~/.config/notes-app/config.json` |
+| Search index, log | `%LOCALAPPDATA%\notes-app` | `~/Library/Application Support/notes-app` (log: `~/Library/Logs/notes-app.log`) | `~/.local/share/notes-app` |
+| Program | `%LOCALAPPDATA%\Programs\notes-app` | `~/Library/Application Support/notes-app/program` | `~/.local/share/notes-app/program` |
+
+The search index is disposable and rebuilds itself if deleted. Window layout is remembered per browser.
+
+### Command line
+
+The installers add a `notes-app` command (Windows: `node "%LOCALAPPDATA%\Programs\notes-app\server.js"`):
+
+```
+notes-app                  run the server in the foreground (logs to the terminal)
+notes-app launch           start it in the background if needed and open the app window
+notes-app stop             stop it (after a final sync)
+notes-app set-password     set the web UI password
+notes-app configure ...    save options, e.g. --port 4800 --machine-name laptop
+notes-app --help           all options
+```
 
 ## Development
 
 ```sh
+npm install
+npm run build              # dist/: server.js + web/ (all the server needs; no runtime npm deps)
+node dist/server.js --repo /tmp/test-notes --no-sync --open
 npm run typecheck
-npm test              # sync scenarios, note store, search, HTTP (real git, temp repos)
-npm run test:ui       # end-to-end in headless Chrome; screenshots in tests/ui/screenshots
-node scripts/build.mjs --watch
+npm test                   # unit + sync scenarios with real git in temp repos
+npm run test:ui            # end-to-end in headless Chrome; screenshots in tests/ui/screenshots
+npm run package            # release/*.zip and *.tar.gz with the installers
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests on Linux, Windows and macOS with Node 22 and 24, the browser tests, and a real install/uninstall on each OS. Pushing a tag like `v0.2.0` publishes a release with the installers (`release.yml`).
 
 The design, decisions and remaining work are in [HANDOVER.md](HANDOVER.md). The HTTP API and the sync protocol for non-git clients are in [docs/API.md](docs/API.md).

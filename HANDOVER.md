@@ -1,6 +1,6 @@
 # Handover: Git-backed Markdown Notes App
 
-Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 27 November 2026 (stack decided, M0–M6 built; see **Section 17** for what changed and why).
+Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 27 November 2026 (M0–M7 built, plus wiki links, settings, installers and Tailscale access; see **Section 17**).
 
 ## 1. How to use this document
 
@@ -33,7 +33,7 @@ Non-goals (for v1):
 | Area | Decision |
 | --- | --- |
 | Users | Single user (the owner), several machines they control |
-| Platforms | Windows, Linux, macOS desktops; a web UI hosted on the owner's Raspberry Pi (phones, any browser); later KindleHub (decided 27 Nov 2026) |
+| Platforms | Windows, Linux, macOS desktops; a web UI hosted on the owner's Raspberry Pi (phones, any browser, at home and via Tailscale away from home); later KindleHub, a KOReader plugin on a 7th-gen Kindle (decided 27 Nov 2026) |
 | Storage | Markdown files in a folder that is a git repo, hosted on GitHub |
 | Sync | Via git, driven by the app. No custom sync server: every machine running the app is a git client of GitHub. Devices that can't run git (phone browser, KindleHub) talk HTTP to a machine running the app, normally the Pi (decided 27 Nov 2026) |
 | Interface | GUI, not terminal-based. Desktop: the app's web UI in an installed app window. Pi: the same web UI over the home network |
@@ -79,15 +79,17 @@ Answered on 27 Nov 2026:
 1. ~~Final stack~~: TypeScript/Node server + web UI (see 4.1).
 2. ~~Operating systems~~: Windows, Linux, macOS, plus the Pi web UI and KindleHub later.
 3. ~~Phone access~~: yes, through the web UI hosted on the Pi.
+4. ~~Notes location / existing repo~~: starting fresh with a new empty GitHub repo. Notes live at the repo root by default (`notesDir` setting).
+6. ~~Wiki links~~: built (title-based `[[links]]`, backlinks).
+8. ~~KindleHub~~: KindleHub is the owner's KOReader plugin (repo `Brynkr/KindleHub`) on a Kindle the owner believes is 7th gen. Plan: a Lua client using the HTTP sync recipe in `docs/API.md`, talking to the Pi on the home LAN. Owner to share more device detail later; the repo couldn't be read from the 27 Nov session.
+9. ~~Pi access from outside the home~~: wanted. Done via Tailscale (`tailscale serve`, HTTPS on the tailnet); see README.
 
 Still open (current behaviour in brackets):
 
-4. **Notes location:** repo root or a subfolder? Is there an existing repo of notes to adopt? [`--notes-dir`, default the repo root]
 5. **Subfolders:** [nested folders are listed in the sidebar with a folder prefix; new notes are created at the notes root; no folder UI]
-6. **Wiki links** (`[[note title]]`) and backlinks: wanted, and in which milestone? [not built]
-7. **Default branch and remote name** [`main` and `origin`, configurable]
-8. **KindleHub integration:** which Kindle model/firmware, is it jailbroken, and what can KindleHub run (HTTP client, local storage)? This decides whether it uses the HTTP sync protocol in `docs/API.md` (current plan) or something else.
-9. **Pi access from outside the home:** LAN only, or via a VPN such as Tailscale? [LAN, HTTP Basic auth; do not expose to the internet]
+7. **Default branch and remote name** [`main` and `origin`, configurable in Settings]
+10. **Which Pi?** The owner has a Raspberry Pi 2 (armv7, 1 GB) that already runs other services. If that's the notes host, Node must stay on 22 (Node 24 has no armv7 build); the installer handles this. [supported]
+11. **Link renames:** should changing a note's title rewrite `[[links]]` to it in other notes? [no; old links show as missing]
 
 ## 6. Architecture overview
 
@@ -128,10 +130,15 @@ notes-app/
     notes.ts         NoteStore: list/read/create/delete and the single write path
     watcher.ts       debounced fs.watch + periodic rescan
     search.ts        SQLite FTS5 index
-    http.ts          JSON API, SSE, static files, auth/CSRF/Host checks
+    http.ts          JSON API, SSE, static files, auth/CSRF/Host checks, local shutdown
+    runtime.ts       NotesRuntime: everything tied to one notes folder; restartable for settings changes
+    settings.ts      validation, remote test, first-run clone/adopt, remote URL changes
+    quiet.ts         hides node:sqlite's experimental warning
   shared/
     types.ts         API types used by server and UI
     markdown.ts      title/front-matter helpers used by both
+    links.ts         [[wiki link]] parsing and resolution
+    fuzzy.ts         quick-switcher matching
   web/
     main.ts          UI wiring, shortcuts, server events
     api.ts           fetch wrappers + EventSource
@@ -139,15 +146,19 @@ notes-app/
       workspace.ts   layout preset, panes, active pane (localStorage)
       buffers.ts     shared buffers, autosave, crash stash
     editor/cm.ts     CodeMirror setup; replays edits between panes sharing a buffer
-    ui/              sidebar, panes, status bar + conflict banner, DOM helpers
+    editor/wikilinks.ts  link styling, Ctrl/Cmd+click, [[ completion
+    ui/              sidebar, panes (+ backlinks), status bar, conflict banner, quick switcher, settings + setup
     static/          index.html, style.css, manifest, icons
   tests/
     sync/            Section 13 scenarios against temp git repos
-    server/          note store, watcher, search, HTTP
+    server/          note store, watcher, search, HTTP, settings/setup
+    shared/          fuzzy matching, wiki links
     ui/smoke.mjs     end-to-end in headless Chrome with a second "machine"
-  deploy/            systemd unit for the Pi
+    ui/features.mjs  first-run setup, switcher, links/backlinks, settings
+  installer/         install/uninstall for Windows (.ps1 + .cmd) and macOS/Linux/Pi (.sh), icons
+  .github/workflows/ CI on Linux/Windows/macOS incl. real installs; release on v* tags
   docs/API.md        HTTP API and sync protocol for non-git clients (KindleHub)
-  scripts/build.mjs  esbuild bundling into dist/
+  scripts/           build (esbuild), package (release zips), icons, screenshot
 ```
 
 ## 8. Data model
@@ -301,13 +312,15 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 | Milestone | Status |
 | --- | --- |
 | M0 sync prototype | Done. All 10 Section 13 scenarios plus extras pass (`tests/sync`) |
-| M1 skeleton | Done. Folder is configured by CLI/settings file, not yet in the UI |
+| M1 skeleton | Done. First-run setup screen picks the folder and remote |
 | M2 buffers + panes + watcher | Done |
 | M3 search | Done |
 | M4 in-app sync | Done. "Two machines converge" is tested with real git; not yet tried on two physical machines |
 | M5 conflict UI | Done (banner, chips open the copy beside the original, toast on save conflicts) |
 | M6 split screen | Done, all five presets, restore on reload. Draggable dividers not built |
-| M7 polish | Partly done: shortcuts, errors, phone layout, dark mode. Not done: settings screen, fuzzy quick-switch (Ctrl+K searches instead), packaging/installers |
+| M7 polish | Done: settings screen, fuzzy quick switcher (Ctrl/Cmd+P), shortcuts, phone layout, dark mode, installers for Windows/macOS/Linux/Pi |
+| Later: wiki links + backlinks | Done (27 Nov) |
+| Later: tags UI, Markdown preview, per-note history, draggable dividers | Not built |
 
 ## 13. Testing
 
@@ -382,10 +395,22 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 - Line endings: the editor works in LF. When saving, if the file on disk contains any CRLF, the whole file is written with CRLF; otherwise LF. New notes use LF.
 - Conflict copies are named `<stem> (conflict YYYY-MM-DD <host>).md`, where `<host>` is the other machine (from its auto-commit message) for git merges, or this machine for save-time conflicts.
 
-**Known gaps / next steps (suggested order)**
+**27 Nov 2026 (second session): settings, switcher, wiki links, installers, remote access.**
 
-1. Try it on real machines: Windows desktop + Pi + GitHub (see README).
-2. Settings screen (repo path, remote, branch, intervals, password).
-3. Pi packaging: a one-line installer script and update path.
-4. KindleHub: confirm the device constraints (open question 8), then implement a client against `docs/API.md`. Possibly add a no-JavaScript read/edit page if the Kindle browser is the target.
-5. Quick-switch fuzzy finder (M7), then the "Later" list in Section 12.
+- The server can start with no notes folder and shows a setup screen. Setup clones an empty or missing folder from the remote, or adopts a folder of notes. It **refuses folders holding anything other than .md/.txt files**, so e.g. Documents can never be pushed to GitHub.
+- Everything tied to a notes folder lives in `NotesRuntime`; Settings changes stop it (after a final sync) and start a new one, then tell clients to reload (`reconfigured` event). Listening address/port need a restart.
+- Remote URLs are validated (https, ssh, scp-style, absolute paths only) and every git call runs with `protocol.ext.allow=never`. "Repository not found" is an error, not "offline".
+- "Test connection" and first-time clone may show Git Credential Manager's sign-in on a desktop (`interactiveAuth`); background syncs never prompt.
+- Wiki links are title-based (`[[Title]]`, `[[Title|alias]]`, `[[Title#heading]]`), resolved title first, then filename/slug. The search index (schema v2) stores links for backlinks. Missing targets are dashed; following one creates the note.
+- `notes-app launch` = background server + chromeless app window (Edge/Chrome/Chromium `--app`). Installers are per-user scripts rather than signed native installers. Signed MSI/DMG would need certificates and build machines for little gain at this stage.
+- Pi: `install.sh --server` sets a password, listens on the LAN, makes an SSH key for a GitHub deploy key, enables linger; `--tailscale` runs `tailscale serve --bg 4747` and adds the ts.net name to `allowedHosts` (password still required).
+- Local tools stop the server with a per-start token in `<dataDir>/control-<port>.token` (mode 600), accepted only from loopback.
+
+**Not verified yet (no Windows/macOS/Pi here):** the PowerShell installer, macOS LaunchAgent/app bundle, the private Node download, Tailscale serve, and Git Credential Manager sign-in. The CI workflow runs the installers on real Windows/macOS/Linux runners; check its results after the first push.
+
+**Next steps (suggested order)**
+
+1. Push to GitHub, check CI, tag `v0.2.0` for a release; install on the Windows PC and the Pi.
+2. KindleHub client (Lua, `docs/API.md`), once the KindleHub repo and device details are available.
+3. Tags UI, Markdown preview, per-note history from `git log`, draggable dividers.
+4. Optional: rewrite `[[links]]` when a title changes (open question 11).

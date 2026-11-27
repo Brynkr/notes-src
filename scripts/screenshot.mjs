@@ -14,7 +14,7 @@ const write = (name, text, minutesAgo) => {
   const t = new Date(Date.now() - minutesAgo * 60_000);
   fs.utimesSync(p, t, t);
 };
-write("20261127-091500-weekend-plan.md", "# Weekend plan\n\n## Saturday\n\n- [x] Farmers market, early\n- [ ] Fix the **bike chain**\n- [ ] Call Mum\n\n## Sunday\n\nWalk the *Tāwharanui* loop if the weather holds. Pack:\n\n- water, snacks\n- rain jacket\n\n> Low tide is around 2 pm.\n", 3);
+write("20261127-091500-weekend-plan.md", "# Weekend plan\n\n## Saturday\n\n- [x] Farmers market, early\n- [ ] Fix the **bike chain**\n- [ ] Call Mum\n\n## Sunday\n\nWalk the *Tāwharanui* loop if the weather holds. Then the [[Raspberry Pi setup]] to-dos. Pack:\n\n- water, snacks\n- rain jacket\n\n> Low tide is around 2 pm.\n", 3);
 write("20261126-203000-pi-setup.md", "# Raspberry Pi setup\n\nNotes server runs as a user service:\n\n```sh\nsystemctl --user status notes-app\n```\n\nOpen `http://raspberrypi.local:4747` on the phone.\n\n## To do\n\n1. Tailscale for access away from home\n2. Back up the SD card\n", 60 * 5);
 write("20261125-221000-reading-list.md", "---\ntags: [books]\n---\n# Reading list\n\n- *The Overstory*, Richard Powers\n- *A Philosophy of Software Design*\n- *Piranesi*\n", 60 * 26);
 write("20261120-080000-kindlehub-ideas.md", "# KindleHub ideas\n\nSync notes over wifi when a note is opened.\nUse the API in docs/API.md.\n", 60 * 24 * 7);
@@ -23,6 +23,7 @@ execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
 
 const env = { ...process.env, NOTES_APP_CONFIG_DIR: path.join(root, "c"), NOTES_APP_DATA_DIR: path.join(root, "d") };
 const server = spawn(process.execPath, ["dist/server.js", "--repo", repo, "--port", "4798", "--machine-name", "desktop", "--no-sync"], { env, stdio: "ignore" });
+// (No --repo needed for a fresh folder: it is created and initialised.)
 await new Promise((r) => setTimeout(r, 1200));
 const browser = await puppeteer.launch({ executablePath: process.env.CHROME ?? "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox", "--no-proxy-server"] });
 try {
