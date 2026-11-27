@@ -156,9 +156,8 @@ notes-app/
     ui/smoke.mjs     end-to-end in headless Chrome with a second "machine"
     ui/features.mjs  first-run setup, switcher, links/backlinks, settings
   installer/         install/uninstall for Windows (.ps1 + .cmd) and macOS/Linux/Pi (.sh), icons
-  .github/workflows/ CI on Linux/Windows/macOS incl. real installs; release on v* tags
   docs/API.md        HTTP API and sync protocol for non-git clients (KindleHub)
-  scripts/           build (esbuild), package (release zips), icons, screenshot
+  scripts/           build (esbuild), package (release zips), build-exe + test-exe (portable executable), icons, screenshot
 ```
 
 ## 8. Data model
@@ -322,7 +321,7 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 | Later: wiki links + backlinks | Done (27 Nov) |
 | Later: per-note history | Done (27 Nov): history dialog with diff and restore |
 | Appearance (themes, fonts, zoom) | Done (28 Nov) |
-| Portable Windows exe | Done (28 Nov), built and tested in CI |
+| Portable Windows exe | Done (28 Nov); `npm run test:exe` passed on Windows (in CI, before CI was removed) and Linux |
 | Later: tags UI, Markdown preview, draggable dividers | Not built |
 
 ## 13. Testing
@@ -420,17 +419,19 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 
 **28 Nov 2026: appearance.** A top bar holds "Go to note…", a text-zoom control and an Appearance pop-out (themes first, then fonts, text, layout, editor). 16 themes (8 light, 8 dark incl. high contrast) live as data in `web/appearance/themes.ts`, applied as CSS variables, with tints derived via `color-mix`; a unit test enforces WCAG contrast (body text ≥ 12:1, secondary text and accents ≥ 4.5:1). Other options: note font (5 system font stacks; no web fonts, so it works offline), interface font, line spacing, line width, borders (none/subtle/strong/cards via `--divider` and `[data-borders]`), corners (`--r-*`), spacing (`[data-density]`), line numbers / current line / spell check (a CodeMirror compartment, switched live), animations. Text zoom scales note text only (Ctrl/Cmd +/−/0). All per device in localStorage (`notes-app:appearance:v1`).
 
-**28 Nov 2026: portable Windows exe.** `npm run exe` (`scripts/build-exe.mjs`) makes a Node SEA: the server bundled to CommonJS (SEA entry points must be CJS on Node 22; `import.meta.url` is defined from `__filename`), `dist/web/**` embedded as `web/<path>` assets and served through `AppContext.readStatic`, injected into a copy of `node.exe` with `postject`, icon/version via `rcedit`, PE subsystem patched to GUI (2) so no console window opens. `server/sea.ts` wraps `node:sea`. In the exe: no command means `launch` (double-click), `launch` respawns the exe itself with the explicit `serve` command, settings/data go to `<exe dir>/Notes-data/{settings,data}` when writable (env vars still win), and fatal errors show a message box via hidden PowerShell since there's no console. Size is about 80–120 MB (it's the whole Node runtime). Git is still a system dependency. Not code-signed, so SmartScreen warns once. CLI output from the windowed exe isn't visible in a terminal; use the installer's `notes` or `node dist/server.js` for CLI work. CI job `exe-windows` checks the subsystem byte, launches it, does setup against a local bare repo, creates a note, syncs and checks the push landed, then stops it.
+**28 Nov 2026: portable Windows exe.** `npm run exe` (`scripts/build-exe.mjs`) makes a Node SEA: the server bundled to CommonJS (SEA entry points must be CJS on Node 22; `import.meta.url` is defined from `__filename`), `dist/web/**` embedded as `web/<path>` assets and served through `AppContext.readStatic`, injected into a copy of `node.exe` with `postject`, icon/version via `rcedit`, PE subsystem patched to GUI (2) so no console window opens. `server/sea.ts` wraps `node:sea`. In the exe: no command means `launch` (double-click), `launch` respawns the exe itself with the explicit `serve` command, settings/data go to `<exe dir>/Notes-data/{settings,data}` when writable (env vars still win), and fatal errors show a message box via hidden PowerShell since there's no console. Size is about 80–120 MB (it's the whole Node runtime). Git is still a system dependency. Not code-signed, so SmartScreen warns once. CLI output from the windowed exe isn't visible in a terminal; use the installer's `notes` or `node dist/server.js` for CLI work. `scripts/test-exe.mjs` (`npm run test:exe`) checks the subsystem byte, launches it, does setup against a local bare repo, creates a note, syncs and checks the push landed, then stops it.
+
+**28 Nov 2026: no CI.** The owner doesn't want GitHub Actions used, for builds or tests, in any project. `.github/workflows/` (ci.yml, release.yml) was removed; testing is manual (`typecheck`, `test`, `test:ui`, `test:exe`), and release files are built locally (`npm run package`; `npm run exe` on Windows). What CI used to cover that now needs the owner's machines: tests on Windows/macOS, real installer runs there, and the Windows exe build.
 
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 
-**Verified in CI (27 Nov 2026, run on Brynkr/notes-src):** unit tests on Linux/Windows/macOS × Node 22/24, browser tests, and install → launch → uninstall on Windows (PowerShell installer, shortcuts, Apps & features entry), macOS (LaunchAgent, app bundle) and Linux. The first run found a Windows-only bug (corrupt index file locked while deleting) and an over-long default machine name; both are fixed.
+**Verified in CI (27–28 Nov 2026, before CI was removed):** unit tests on Linux/Windows/macOS × Node 22/24, browser tests, and install → launch → uninstall on Windows (PowerShell installer, shortcuts, Apps & features entry), macOS (LaunchAgent, app bundle) and Linux. The first run found a Windows-only bug (corrupt index file locked while deleting) and an over-long default machine name; both are fixed.
 
 **Still not verified:** the private Node download (nodejs.org unreachable from the dev sandbox), `tailscale serve`, Git Credential Manager sign-in, and a real Raspberry Pi 2.
 
 **Next steps (suggested order)**
 
-1. Tag `v0.4.0` for a release (installers + portable exe); install on the Windows PC and the Pi.
+1. Build locally (`npm run package`; on the Windows PC `npm run exe && npm run test:exe`); install on the Windows PC and the Pi.
 2. KindleHub client (Lua, `docs/API.md`), once the KindleHub repo and device details are available.
 3. Tags UI, Markdown preview, draggable dividers. Optional: auto-empty Trash after N days.
 4. Optional: rewrite `[[links]]` when a title changes (open question 11).

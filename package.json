@@ -16,7 +16,8 @@
     "test:ui": "node scripts/build.mjs && node tests/ui/smoke.mjs && node tests/ui/features.mjs && node tests/ui/offline.mjs && node tests/ui/appearance.mjs",
     "package": "node scripts/package.mjs",
     "icons": "node scripts/icons.mjs",
-    "exe": "node scripts/build-exe.mjs"
+    "exe": "node scripts/build-exe.mjs",
+    "test:exe": "node scripts/test-exe.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.4",

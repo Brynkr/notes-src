@@ -13,6 +13,8 @@ npm run typecheck    # tsc --noEmit (TypeScript 7)
 npm test             # node:test, runs .ts directly; real git against temp repos
 npm run test:ui      # builds, then headless Chrome end-to-end: smoke, features, offline, appearance (set CHROME=... if not found)
 npm run package      # release/*.zip + *.tar.gz with installers
+npm run exe          # portable single executable: release/Notes.exe on Windows, release/notes elsewhere
+npm run test:exe     # smoke-test that executable (launch, setup, note, sync, stop)
 node dist/server.js --repo /tmp/some-notes --no-sync --open   # try it locally
 NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fresh, unconfigured (setup screen)
 ```
@@ -30,4 +32,5 @@ NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fr
 - Anything tied to a notes folder belongs in `NotesRuntime` (server/runtime.ts), so Settings can swap it at runtime.
 - Keep Node 22 compatibility: the owner's Raspberry Pi 2 is armv7, which has no Node 24 build.
 - Colours come from `web/appearance/themes.ts` (checked for contrast by `tests/shared/themes.test.ts`); use the CSS variables, never hard-coded colours. Structural lines use `--divider` (the Borders option), radii use `--r-sm/md/lg` (Corners).
-- Installers are bash/PowerShell; `bash -n installer/install.sh` at least, and rely on CI for Windows/macOS runs.
+- No GitHub Actions, for builds or tests: everything is run by hand, locally. Don't add workflows.
+- Installers are bash/PowerShell; `bash -n installer/install.sh` at least. Windows/macOS runs have to be done by the owner on those machines; say what to run.
