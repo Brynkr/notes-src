@@ -12,6 +12,12 @@ import { ConflictBanner, originalOf, StatusBar } from "./ui/statusbar.ts";
 import { QuickSwitcher } from "./ui/switcher.ts";
 import { TrashDialog } from "./ui/trash.ts";
 import { HistoryDialog } from "./ui/history.ts";
+import { AppearanceStore } from "./appearance/prefs.ts";
+import { TopBar } from "./ui/appearance.ts";
+
+// Apply the saved look before anything renders (setup screen included).
+const appearance = new AppearanceStore();
+appearance.apply();
 import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 
 const workspace = new Workspace();
@@ -171,6 +177,7 @@ const grid = new PaneGrid({
   deleteNote,
   openNote,
   showHistory: (target) => void historyDialog.show(target),
+  editorPrefs: () => ({ lineNumbers: appearance.value.lineNumbers, activeLine: appearance.value.activeLine, spellcheck: appearance.value.spellcheck }),
   links: {
     notes: () => notes,
     exists: (target) => linkKeys.has(linkKey(target)),
@@ -223,7 +230,15 @@ statusbar.el.append(
 
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
-const main = h("main", { class: "main" }, banner.el, grid.el, statusbar.el);
+const topbar = new TopBar(appearance, { goto: () => switcher.show() });
+appearance.onChange((a, changed) => {
+  if (changed.some((k) => k === "lineNumbers" || k === "activeLine" || k === "spellcheck")) {
+    grid.applyEditorPrefs({ lineNumbers: a.lineNumbers, activeLine: a.activeLine, spellcheck: a.spellcheck });
+  }
+  // Fonts and sizes change line heights: let the editors re-measure.
+  requestAnimationFrame(() => grid.remeasure());
+});
+const main = h("main", { class: "main" }, topbar.el, banner.el, grid.el, statusbar.el);
 const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el, historyDialog.el);
 
 function showNewNote(): void {
@@ -292,6 +307,26 @@ window.addEventListener(
   "keydown",
   (e) => {
     const mod = isMac ? e.metaKey : e.ctrlKey;
+    if (e.key === "Escape" && topbar.panel.isOpen) {
+      e.preventDefault();
+      topbar.panel.close();
+      return;
+    }
+    if (mod && !e.altKey && (e.key === "=" || e.key === "+")) {
+      e.preventDefault(); // text zoom instead of page zoom
+      appearance.zoomBy(0.1);
+      return;
+    }
+    if (mod && !e.altKey && (e.key === "-" || e.key === "_")) {
+      e.preventDefault();
+      appearance.zoomBy(-0.1);
+      return;
+    }
+    if (mod && !e.altKey && e.key === "0") {
+      e.preventDefault();
+      appearance.set({ zoom: 1 });
+      return;
+    }
     if (e.key === "Escape") {
       // Close whichever dialog is open, wherever the focus is.
       for (const d of [historyDialog, trashDialog, settingsDialog]) {

@@ -11,7 +11,7 @@ npm install
 npm run build        # esbuild -> dist/server.js + dist/web/
 npm run typecheck    # tsc --noEmit (TypeScript 7)
 npm test             # node:test, runs .ts directly; real git against temp repos
-npm run test:ui      # builds, then headless Chrome end-to-end: smoke, features, offline (set CHROME=... if not found)
+npm run test:ui      # builds, then headless Chrome end-to-end: smoke, features, offline, appearance (set CHROME=... if not found)
 npm run package      # release/*.zip + *.tar.gz with installers
 node dist/server.js --repo /tmp/some-notes --no-sync --open   # try it locally
 NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fresh, unconfigured (setup screen)
@@ -29,4 +29,5 @@ NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fr
 - The owner's other clients (phone browser via the Pi, KindleHub later) depend on `docs/API.md`. Keep it in sync with `server/http.ts`.
 - Anything tied to a notes folder belongs in `NotesRuntime` (server/runtime.ts), so Settings can swap it at runtime.
 - Keep Node 22 compatibility: the owner's Raspberry Pi 2 is armv7, which has no Node 24 build.
+- Colours come from `web/appearance/themes.ts` (checked for contrast by `tests/shared/themes.test.ts`); use the CSS variables, never hard-coded colours. Structural lines use `--divider` (the Borders option), radii use `--r-sm/md/lg` (Corners).
 - Installers are bash/PowerShell; `bash -n installer/install.sh` at least, and rely on CI for Windows/macOS runs.

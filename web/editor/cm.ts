@@ -7,8 +7,8 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { Annotation, EditorSelection, EditorState, Transaction, type Text } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, keymap, placeholder, dropCursor } from "@codemirror/view";
+import { Annotation, Compartment, EditorSelection, EditorState, Transaction, type Extension, type Text } from "@codemirror/state";
+import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, placeholder, dropCursor } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { BufferStore, BufferView, NoteBuffer } from "../state/buffers.ts";
 import { taskCheckboxes } from "./tasks.ts";
@@ -37,8 +37,11 @@ const markdownHighlight = HighlightStyle.define([
 
 const theme = EditorView.theme({
   "&": { height: "100%", backgroundColor: "transparent", color: "var(--ink)" },
-  ".cm-scroller": { fontFamily: "var(--editor-font)", lineHeight: "1.65", overflow: "auto" },
-  ".cm-content": { maxWidth: "74ch", margin: "0 auto", padding: "28px 28px 40vh", caretColor: "var(--accent)" },
+  ".cm-scroller": { fontFamily: "var(--editor-font)", lineHeight: "var(--editor-lh)", overflow: "auto" },
+  ".cm-content": { maxWidth: "var(--editor-width)", margin: "0 auto", padding: "var(--editor-pad) var(--editor-pad) 40vh", caretColor: "var(--accent)" },
+  ".cm-gutters": { backgroundColor: "transparent", border: "none", color: "var(--faint)", fontFamily: "var(--ui-font)", fontSize: "0.72em" },
+  ".cm-lineNumbers .cm-gutterElement": { padding: "0 6px 0 14px", minWidth: "3ch" },
+  ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--muted)" },
   ".cm-line": { padding: "0" },
   "&.cm-focused": { outline: "none" },
   ".cm-cursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
@@ -67,6 +70,28 @@ const theme = EditorView.theme({
   ".cm-completionDetail": { color: "var(--faint)", marginLeft: "8px", fontStyle: "normal" },
 });
 
+/** Editor options from the Appearance panel, switchable on live editors. */
+export interface EditorPrefs {
+  lineNumbers: boolean;
+  activeLine: boolean;
+  spellcheck: boolean;
+}
+
+const prefsSlot = new Compartment();
+
+function prefsExtension(p: EditorPrefs): Extension {
+  return [
+    p.lineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : [],
+    p.activeLine ? highlightActiveLine() : [],
+    EditorView.contentAttributes.of({ spellcheck: String(p.spellcheck), autocorrect: p.spellcheck ? "on" : "off", autocapitalize: "sentences" }),
+  ];
+}
+
+/** Apply new editor options to an open editor (and re-measure after font changes). */
+export function applyEditorPrefs(view: EditorView, p: EditorPrefs): void {
+  view.dispatch({ effects: prefsSlot.reconfigure(prefsExtension(p)) });
+}
+
 export interface PaneEditor extends BufferView {
   view: EditorView;
   destroy(): void;
@@ -82,6 +107,7 @@ export function createEditor(opts: {
   onRefresh: () => void;
   extraKeys?: { key: string; run: () => boolean }[];
   links: LinkHost;
+  prefs: EditorPrefs;
 }): PaneEditor {
   const { buffer, store } = opts;
   const len = buffer.doc.length;
@@ -98,7 +124,7 @@ export function createEditor(opts: {
         history(),
         drawSelection(),
         dropCursor(),
-        highlightActiveLine(),
+        prefsSlot.of(prefsExtension(opts.prefs)),
         indentOnInput(),
         bracketMatching(),
         highlightSelectionMatches(),
@@ -126,7 +152,6 @@ export function createEditor(opts: {
         wikiLinks(opts.links),
         taskCheckboxes(),
         theme,
-        EditorView.contentAttributes.of({ spellcheck: "true", autocorrect: "on", autocapitalize: "sentences" }),
         EditorView.domEventHandlers({
           focus: () => {
             opts.onFocus();

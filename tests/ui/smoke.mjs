@@ -233,7 +233,8 @@ try {
     assert.equal(fs.existsSync(path.join(desk, ".trash", victim)), false);
     await waitFor(async () => (await page.$eval(".pane.active .pane-title", (e) => e.title)) === victim, "reopened");
     // Delete it again and leave it in the Trash for the next steps.
-    await page.click(".pane.active .pane-delete");
+    await page.waitForSelector(".pane.active .cm-content");
+    await clickSafe(".pane.active .pane-delete:not([hidden])");
     await waitFor(() => !files().includes(victim), "moved again");
   });
 

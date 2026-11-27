@@ -89,6 +89,8 @@ Don't forward port 4747 on your router, and don't use `tailscale funnel` (that p
 | Split screen | **Ctrl/⌘+\\**, Ctrl/⌘+click a note, or the layout buttons at the bottom right. **Alt+1…4** focuses a pane, **Alt+W** closes it |
 | Delete / Trash | the bin button on a note moves it to the **Trash** (Undo in the message that pops up). The bin button in the sidebar opens the Trash: preview, restore, or delete forever. The Trash syncs to all your devices |
 | History | the clock button on a note: every synced version, with what restoring it would change. Restoring is an ordinary edit (Ctrl/⌘+Z undoes it) |
+| Appearance | the palette button at the top right: 16 themes (or Automatic, following your system's light/dark), note font, interface font, line spacing and width, borders (none / subtle / strong / cards), corners, spacing, line numbers, current-line highlight, spell check, animations. Saved per device |
+| Text size | the **− 100% +** control at the top right, or **Ctrl/⌘ +**, **Ctrl/⌘ −**, **Ctrl/⌘ 0** |
 | Settings | **Ctrl/⌘+,** or the gear at the bottom right |
 | Save / sync now | **Ctrl/⌘+S** / the ↻ button (both happen automatically) |
 

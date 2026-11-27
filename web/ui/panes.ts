@@ -4,7 +4,7 @@ import { conflictInfo, originalOf } from "../../shared/conflicts.ts";
 import { extractTitle } from "../../shared/markdown.ts";
 import type { Backlink } from "../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
-import { createEditor, minimalChange, type PaneEditor } from "../editor/cm.ts";
+import { applyEditorPrefs, createEditor, minimalChange, type EditorPrefs, type PaneEditor } from "../editor/cm.ts";
 import type { HistoryTarget } from "./history.ts";
 import { refreshLinks, type LinkHost } from "../editor/wikilinks.ts";
 import type { BufferStore, NoteBuffer } from "../state/buffers.ts";
@@ -22,6 +22,7 @@ export interface PaneDeps {
   links: LinkHost;
   openNote: (path: string, toSide: boolean) => void;
   showHistory: (target: HistoryTarget) => void;
+  editorPrefs: () => EditorPrefs;
 }
 
 const BACKLINKS_KEY = "notes-app:backlinks-open";
@@ -214,6 +215,15 @@ class Pane {
     );
   }
 
+  applyPrefs(p: EditorPrefs): void {
+    if (this.editor) applyEditorPrefs(this.editor.view, p);
+  }
+
+  /** Fonts or sizes changed: let CodeMirror re-measure lines. */
+  remeasure(): void {
+    this.editor?.view.requestMeasure();
+  }
+
   refreshLinks(): void {
     this.editor?.view.dispatch({ effects: refreshLinks.of(null) });
   }
@@ -253,6 +263,7 @@ class Pane {
       onRefresh: () => this.refreshHeader(),
       extraKeys: this.deps.extraKeys(this.id),
       links: this.deps.links,
+      prefs: this.deps.editorPrefs(),
     });
     const view = this.editor.view;
     requestAnimationFrame(() => {
@@ -269,6 +280,7 @@ class Pane {
 
   private showEmpty(): void {
     this.titleEl.textContent = "No note";
+    this.titleEl.removeAttribute("title");
     this.dotEl.className = "dirty-dot";
     this.deleteBtn.hidden = true;
     this.historyBtn.hidden = true;
@@ -351,6 +363,14 @@ export class PaneGrid {
       pane.el.classList.toggle("active", ps.id === state.activePaneId);
     });
     this.el.classList.toggle("multi", state.panes.length > 1);
+  }
+
+  applyEditorPrefs(p: EditorPrefs): void {
+    for (const pane of this.panes.values()) pane.applyPrefs(p);
+  }
+
+  remeasure(): void {
+    for (const pane of this.panes.values()) pane.remeasure();
   }
 
   /** The set of notes changed: restyle links, refresh backlinks. */
