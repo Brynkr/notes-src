@@ -12,6 +12,11 @@ import { Text } from "@codemirror/state";
 import { api, ApiError } from "../api.ts";
 
 const STASH_KEY = "notes-app:unsaved:v1";
+
+/** Couldn't reach the server at all, or a proxy in front of it says it's down. */
+function isUnreachable(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504);
+}
 const SAVE_DELAY_MS = 600;
 
 export interface BufferView {
@@ -33,6 +38,8 @@ export class NoteBuffer {
   saveTimer: ReturnType<typeof setTimeout> | null = null;
   retryMs = 0;
   lastError: string | null = null;
+  /** The server can't be reached: the text is kept in this browser and saved when it's back. Not an error. */
+  offline = false;
 
   constructor(path: string, text: string, hash: string | null) {
     this.path = path;
@@ -55,13 +62,15 @@ export interface BufferEvents {
   conflictCopy: (path: string, copy: string) => void;
   deleted: (path: string) => void;
   error: (message: string) => void;
+  /** A save couldn't reach the server; the text is stashed in this browser instead. */
+  offline: (path: string) => void;
   changed: (buffer: NoteBuffer) => void;
 }
 
 export class BufferStore {
   private readonly buffers = new Map<string, NoteBuffer>();
   private readonly loading = new Map<string, Promise<NoteBuffer>>();
-  private readonly listeners: { [K in keyof BufferEvents]: BufferEvents[K][] } = { conflictCopy: [], deleted: [], error: [], changed: [] };
+  private readonly listeners: { [K in keyof BufferEvents]: BufferEvents[K][] } = { conflictCopy: [], deleted: [], error: [], offline: [], changed: [] };
 
   on<K extends keyof BufferEvents>(event: K, fn: BufferEvents[K]): void {
     this.listeners[event].push(fn);
@@ -180,11 +189,23 @@ export class BufferStore {
         b.deleted = false;
         b.retryMs = 0;
         b.lastError = null;
+        b.offline = false;
         if (res.conflictCopy) this.emit("conflictCopy", b.path, res.conflictCopy);
       } catch (err) {
-        b.lastError = (err as Error).message;
         // Keep the text and retry with backoff. Never drop an edit.
         b.retryMs = Math.min(30_000, b.retryMs ? b.retryMs * 2 : 1_000);
+        if (isUnreachable(err)) {
+          // No connection (or the Pi is down behind tailscale serve): not an error.
+          // The text is already in this browser's stash; make sure it's written now.
+          b.offline = true;
+          b.lastError = null;
+          this.stashNow();
+          this.scheduleSave(b, b.retryMs);
+          this.emit("offline", b.path);
+          return;
+        }
+        b.offline = false;
+        b.lastError = (err as Error).message;
         // Retry unless the server said the request itself can't succeed.
         if (!(err instanceof ApiError && (err.status === 400 || err.status === 413))) this.scheduleSave(b, b.retryMs);
         this.emit("error", `Couldn't save "${b.path}": ${b.lastError}`);
@@ -281,6 +302,16 @@ export class BufferStore {
     } catch {
       /* ignore */
     }
+  }
+
+  /** Try every unsaved note again now (the connection is back). */
+  retryNow(): void {
+    for (const b of this.all()) if (b.dirty && !b.saving) this.scheduleSave(b, 0);
+  }
+
+  /** Any note whose latest text is only in this browser for now? */
+  get savedOffline(): boolean {
+    return this.all().some((b) => b.offline && b.dirty);
   }
 
   /** Write the stash now. Returns false if unsaved text could not be stored. */

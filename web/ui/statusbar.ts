@@ -58,6 +58,15 @@ export class StatusBar {
     this.render();
   }
 
+  private savedOffline = false;
+
+  /** Some text is saved only in this browser until the server is reachable again. */
+  setSavedOffline(on: boolean): void {
+    if (on === this.savedOffline) return;
+    this.savedOffline = on;
+    this.render();
+  }
+
   setSaveError(msg: string | null): void {
     this.saveError = msg;
     this.render();
@@ -77,10 +86,11 @@ export class StatusBar {
     let state: string;
     let label: string;
     let detail = "";
-    if (!this.connected) {
-      state = "error";
-      label = "Server not reachable";
-      detail = "Edits are kept in this window and saved when it's back.";
+    if (!this.connected || this.savedOffline) {
+      // Expected when there's no connection: saved here, nothing to do.
+      state = "offline";
+      label = "Offline · saved on this device";
+      detail = "Your edits are kept in this browser and sync by themselves when the connection is back.";
     } else if (!s) {
       state = "syncing";
       label = "Connecting…";
@@ -96,8 +106,8 @@ export class StatusBar {
           label = "Syncing…";
           break;
         case "offline":
-          label = `Offline${waiting}`;
-          detail = `Last synced ${ago}. Will retry automatically.`;
+          label = `Offline · saved${waiting}`;
+          detail = `No connection to GitHub. Your notes are saved; they sync by themselves when it's back (last synced ${ago}).`;
           break;
         case "conflict":
           label = `Synced ${ago} · ${s.conflicts.length} conflict cop${s.conflicts.length === 1 ? "y" : "ies"}`;

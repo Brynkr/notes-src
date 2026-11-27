@@ -3,7 +3,15 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { classifyGitError } from "../../server/git.ts";
-import { isConflictCopy } from "../../server/sync.ts";
+import { isConflictCopy, SyncScheduler } from "../../server/sync.ts";
+
+async function waitUntil(ok: () => boolean, what: string, ms = 15_000): Promise<void> {
+  const t0 = Date.now();
+  while (!ok()) {
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 import { hasConflictMarkers, makeWorld, sh, type World } from "../helpers.ts";
 
 let world: World;
@@ -211,6 +219,25 @@ describe("sync scenarios (HANDOVER 13)", () => {
     assert.equal((await A.sync()).state, "synced");
     await B.sync();
     assert.equal(B.read("a.md"), "# A\n\nwritten offline\n");
+  });
+
+  test("8b. offline: the scheduler keeps retrying and pushes on its own once the remote is back", async () => {
+    const { A, B } = await pair();
+    sh(A.dir, "remote", "set-url", "origin", "http://127.0.0.1:9/nowhere.git");
+    A.write("a.md", "# A\n\nsaved with no connection\n");
+    // Long interval and idle: only the offline retry can bring it back in time.
+    const sched = new SyncScheduler(A.engine, { intervalMs: 0, idleMs: 60_000, offlineRetryMs: 300 });
+    sched.start();
+    try {
+      await waitUntil(() => A.engine.status.state === "offline", "offline");
+      assert.equal(A.engine.status.ahead, 1, "committed locally");
+      sh(A.dir, "remote", "set-url", "origin", world.remote); // connection back
+      await waitUntil(() => A.engine.status.state === "synced" && A.engine.status.ahead === 0, "pushed by a retry", 20_000);
+    } finally {
+      await sched.shutdown(5_000);
+    }
+    await B.sync();
+    assert.equal(B.read("a.md"), "# A\n\nsaved with no connection\n");
   });
 
   test("9. sync requested while another runs: operations are serialised", async () => {

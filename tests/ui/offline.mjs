@@ -85,7 +85,9 @@ try {
     await stopServer();
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector(".note-item");
-    await page.waitForSelector(".sync-dot.error");
+    // No connection is expected, not an error: quiet "offline" state.
+    await page.waitForSelector(".sync-dot.offline");
+    assert.match(await page.$eval(".sync-label", (e) => e.textContent), /Offline · saved on this device/);
     const items = await page.$$eval(".note-item .note-title", (els) => els.map((e) => e.textContent));
     assert.deepEqual(items.sort(), ["First", "Second"]);
     await page.click('.note-item[data-path="Home/20261127-090000-second.md"]');
@@ -99,7 +101,17 @@ try {
     await page.keyboard.press("End");
     await page.keyboard.up("Control");
     await page.keyboard.type("Written offline.");
-    await sleep(1200); // save attempt fails; text is stashed
+    // Ctrl+S offline: the copy in this browser is written at once; no prompt, no error toast.
+    await page.keyboard.down("Control");
+    await page.keyboard.press("KeyS");
+    await page.keyboard.up("Control");
+    const stash = await page.evaluate(() => localStorage.getItem("notes-app:unsaved:v1") ?? "");
+    assert.ok(stash.includes("Written offline."), "stashed immediately on Ctrl+S");
+    await page.waitForSelector(".pane.active .dirty-dot.offline");
+    await sleep(1200); // the save attempt fails quietly and will be retried
+    assert.equal(await page.$(".toast"), null, "no toast while offline");
+    assert.equal(await page.$(".sync-dot.error"), null, "not shown as an error");
+    await page.screenshot({ path: path.join(SHOTS, "24-offline-saved.png") });
     assert.equal(fs.readFileSync(second, "utf8").includes("Written offline"), false);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.click('.note-item[data-path="Home/20261127-090000-second.md"]').catch(() => undefined);
