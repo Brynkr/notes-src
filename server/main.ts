@@ -2,6 +2,7 @@
 
 import "./quiet.ts";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -48,9 +49,9 @@ async function main(): Promise<void> {
 
   const fileCfg = loadConfigFile();
   if (cli.command === "set-password") {
-    const pw = await promptHidden("New password: ");
+    const [pw, again] = await promptHidden(["New password: ", "Repeat password: "]);
+    if (pw === undefined || again === undefined) throw new Error("No password entered.");
     if (pw.length < 8) throw new Error("Use at least 8 characters.");
-    const again = await promptHidden("Repeat password: ");
     if (pw !== again) throw new Error("Passwords did not match.");
     saveConfigFile({ ...fileCfg, passwordHash: hashPassword(pw) });
     return void console.log(`Password saved (as a hash) in ${configFile()}`);
@@ -61,6 +62,16 @@ async function main(): Promise<void> {
     return void console.log("Password removed.");
   }
   if (cli.command === "launch") return launch(cli, fileCfg);
+  if (cli.command === "has-password") process.exit(fileCfg.passwordHash ? 0 : 1);
+  if (cli.command === "configure") {
+    saveConfigFile({ ...fileCfg, ...cli.overrides });
+    return void console.log(`Saved settings to ${configFile()}`);
+  }
+  if (cli.command === "stop") {
+    const port = cli.overrides.port ?? fileCfg.port ?? defaults().port;
+    const ok = await requestShutdown(port);
+    return void console.log(ok ? "Stopping the notes server (final sync first)…" : "No notes server is running.");
+  }
   return serve(cli, fileCfg);
 }
 
@@ -82,6 +93,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     );
   }
 
+  let stopping = false;
   let runtime: NotesRuntime | null = null;
   let setupError: string | null = null;
   let switching: Promise<void> = Promise.resolve();
@@ -245,7 +257,14 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     },
   };
 
+  // Lets `notes-app stop` (installers, uninstallers) stop us even with a password set.
+  const controlToken = randomBytes(24).toString("hex");
+  const tokenFile = controlTokenFile(cfg.port);
+  fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+  fs.writeFileSync(tokenFile, controlToken, { mode: 0o600 });
+
   const app = createApp({
+    controlToken,
     runtime: () => runtime,
     info,
     settings,
@@ -253,6 +272,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     passwordHash: () => cfg.passwordHash,
     allowedHosts: () => cfg.allowedHosts,
     webDir: path.join(path.dirname(fileURLToPath(import.meta.url)), "web"),
+    shutdown: () => void stop(),
   });
 
   console.log(`notes-app ${VERSION}`);
@@ -268,8 +288,9 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
   for (const h of cfg.allowedHosts) console.log(`  also:   https://${h}/  (via tailscale serve)`);
   if (cli.open && isLoopback(cfg.host)) openAppWindow(url);
 
-  let stopping = false;
-  const stop = async () => {
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  async function stop(): Promise<void> {
     if (stopping) process.exit(1); // second Ctrl+C: leave now
     stopping = true;
     console.log(cfg.sync && runtime ? "Shutting down: final sync (up to 10 s)…" : "Shutting down.");
@@ -277,10 +298,13 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     app.closeClients();
     await switching;
     await runtime?.stop(10_000);
+    fs.rmSync(tokenFile, { force: true });
     process.exit(0);
-  };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  }
+}
+
+function controlTokenFile(port: number): string {
+  return path.join(dataDir(), `control-${port}.token`);
 }
 
 function readSshPublicKey(): string | null {
@@ -295,6 +319,37 @@ function readSshPublicKey(): string | null {
 }
 
 // --- launch: background server + app window -------------------------------------
+
+function requestShutdown(port: number): Promise<boolean> {
+  let token = "";
+  try {
+    token = fs.readFileSync(controlTokenFile(port), "utf8").trim();
+  } catch {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: "/api/shutdown",
+        method: "POST",
+        headers: { Host: "localhost", "X-Notes-App": "1", "X-Notes-Control": token, "Content-Type": "application/json" },
+        timeout: 3000,
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      },
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end("{}");
+  });
+}
 
 /** Is a notes server answering on this port? (401 counts: it's ours, with a password.) */
 function probe(port: number): Promise<boolean> {
@@ -379,22 +434,42 @@ function openAppWindow(url: string): void {
   else run(process.platform === "darwin" ? "open" : "xdg-open", [url]);
 }
 
-function promptHidden(question: string): Promise<string> {
+/**
+ * Ask several questions without echoing the answers. One readline interface
+ * for all of them, so piped input (two lines) works as well as a terminal.
+ * Resolves with undefined for answers that never came (input closed).
+ */
+function promptHidden(questions: string[]): Promise<(string | undefined)[]> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
-    let asked = false;
-    // Echo the question but not the typed characters.
+    const answers: (string | undefined)[] = [];
+    let prompt = "";
+    // Echo the prompt text but not the typed characters.
     (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = (s: string) => {
-      if (!asked) {
-        process.stdout.write(s);
-        asked = true;
-      }
+      if (s === prompt) process.stdout.write(s);
     };
-    rl.question(question, (answer) => {
+    const lines: string[] = [];
+    let waiting: ((line: string | undefined) => void) | null = null;
+    rl.on("line", (line) => (waiting ? (waiting(line), (waiting = null)) : lines.push(line)));
+    rl.on("close", () => waiting?.(undefined));
+    const next = () =>
+      new Promise<string | undefined>((res) => {
+        if (lines.length) res(lines.shift());
+        else waiting = res;
+      });
+    (async () => {
+      for (const q of questions) {
+        prompt = q;
+        rl.setPrompt(q);
+        rl.prompt();
+        const a = await next();
+        process.stdout.write("\n");
+        answers.push(a);
+        if (a === undefined) break;
+      }
       rl.close();
-      process.stdout.write("\n");
-      resolve(answer);
-    });
+      resolve(answers);
+    })();
   });
 }
 

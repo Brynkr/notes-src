@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { NotesRuntime } from "../../server/runtime.ts";
@@ -7,7 +8,7 @@ import { defaults } from "../../server/config.ts";
 import { getRemoteUrl, nonNoteFiles, setRemoteUrl, setupRepo, testRemote, validateHosts, validateNotesDir, validateRemoteUrl } from "../../server/settings.ts";
 import { sh, tempDir } from "../helpers.ts";
 
-process.env.NOTES_APP_DATA_DIR ??= fs.mkdtempSync(path.join(process.env.TMPDIR ?? "/tmp", "notes-data-"));
+process.env.NOTES_APP_DATA_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), "notes-data-"));
 
 describe("validation", () => {
   test("remote URLs", () => {

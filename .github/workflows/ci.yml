@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  ui:
+    name: browser tests (Chrome)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: tests/ui/screenshots
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/*.zip
+
+  install-windows:
+    name: installer (Windows)
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Install, launch, uninstall
+        shell: pwsh
+        run: |
+          Expand-Archive (Get-ChildItem *.zip).FullName -DestinationPath .
+          $dir = (Get-ChildItem -Directory notes-app-*).FullName
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\installer\install.ps1" -Yes -NoLaunch
+          $dest = Join-Path $env:LOCALAPPDATA 'Programs\notes-app'
+          if (-not (Test-Path "$dest\server.js")) { throw 'app not installed' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'Notes.lnk'))) { throw 'no Start menu shortcut' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\notes-app')) { throw 'no uninstall entry' }
+          node "$dest\server.js" launch --no-window
+          $info = Invoke-RestMethod http://127.0.0.1:4747/api/info
+          if ($info.configured) { throw 'expected the setup screen on first run' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$dest\uninstall.ps1"
+          Start-Sleep -Seconds 6
+          if (Test-Path "$dest\server.js") { throw 'uninstall left files behind' }
+          try { Invoke-RestMethod http://127.0.0.1:4747/api/info -TimeoutSec 3; throw 'server still running' } catch { 'server stopped' }
+
+  install-unix:
+    name: installer (${{ matrix.os }})
+    needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Install, launch, uninstall
+        run: |
+          unzip -q notes-app-*.zip
+          cd notes-app-*/
+          ./install.sh -y
+          ~/.local/bin/notes-app launch --no-window
+          curl -fsS http://127.0.0.1:4747/api/info
+          ./uninstall.sh
+          sleep 4
+          ! curl -fsS --max-time 3 http://127.0.0.1:4747/api/info

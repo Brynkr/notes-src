@@ -83,7 +83,7 @@ export function saveConfigFile(cfg: Partial<Config>): void {
 }
 
 export interface Cli {
-  command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch";
+  command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch" | "configure" | "stop" | "has-password";
   overrides: Partial<Config>;
   open: boolean;
   save: boolean;
@@ -111,6 +111,9 @@ export function parseArgs(argv: string[]): Cli {
       case "help":
       case "version":
       case "launch":
+      case "configure":
+      case "stop":
+      case "has-password":
         cli.command = a;
         break;
       case "-h":
@@ -150,6 +153,8 @@ export function parseArgs(argv: string[]): Cli {
       case "--sync-interval":
         o.syncIntervalSeconds = num(need(i++, a), a);
         break;
+      case "--no-window":
+        break; // handled by "launch"
       case "--no-sync":
         o.sync = false;
         break;
@@ -202,7 +207,9 @@ export const HELP = `notes-app: git-backed Markdown notes
 
 Usage:
   notes-app [options]            start the server
-  notes-app launch               start it in the background if needed, open the app window
+  notes-app launch [--no-window] start it in the background if needed, open the app window
+  notes-app stop                 stop a running server (after a final sync)
+  notes-app configure [options]  save options as defaults without starting
   notes-app set-password         require a password (needed for --lan)
   notes-app clear-password
 

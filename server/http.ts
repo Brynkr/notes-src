@@ -10,7 +10,7 @@
 // - With a password set (required whenever other machines can reach the
 //   server), every request needs HTTP Basic auth.
 
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -61,6 +61,10 @@ export interface AppContext {
   passwordHash(): string | undefined;
   allowedHosts(): string[];
   webDir: string;
+  /** Graceful stop, requested from this machine (installer, `notes-app stop`). */
+  shutdown?: () => void;
+  /** Secret in a file only this user can read; lets local tools stop the server without the password. */
+  controlToken?: string;
 }
 
 const MIME: Record<string, string> = {
@@ -303,6 +307,15 @@ export function createApp(ctx: AppContext) {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
       if (!hostAllowed(req)) throw new HttpError(421, "Unexpected Host header");
+      if (url.pathname === "/api/shutdown" && req.method === "POST") {
+        const addr = req.socket.remoteAddress ?? "";
+        const local = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(addr);
+        const token = String(req.headers["x-notes-control"] ?? "");
+        if (!ctx.shutdown || !local || !ctx.controlToken || !safeEqual(token, ctx.controlToken)) throw new HttpError(403, "Not allowed");
+        send(res, 200, { ok: true });
+        setTimeout(() => ctx.shutdown?.(), 50);
+        return;
+      }
       if (!checkAuth(req)) {
         res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Notes", charset="UTF-8"', "Content-Type": "text/plain" });
         res.end("Password required");
@@ -332,4 +345,10 @@ export function createApp(ctx: AppContext) {
       clients.clear();
     },
   };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }

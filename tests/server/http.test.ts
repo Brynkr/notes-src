@@ -12,7 +12,7 @@ import { tempDir } from "../helpers.ts";
 
 const status: SyncStatusDto = { state: "synced", lastSyncMs: 0, lastAttemptMs: 0, message: null, conflicts: [], ahead: 0 };
 
-async function start(passwordHash?: string, opts: { allowedHosts?: string[]; noRuntime?: boolean } = {}) {
+async function start(passwordHash?: string, opts: { allowedHosts?: string[]; noRuntime?: boolean; onShutdown?: () => void } = {}) {
   const dir = await tempDir("notes-http-");
   const store = new NoteStore({ root: dir, worktreeLock: new Queue(), machineName: "t" });
   const saved: string[][] = [];
@@ -43,6 +43,8 @@ async function start(passwordHash?: string, opts: { allowedHosts?: string[]; noR
     passwordHash: () => passwordHash,
     allowedHosts: () => opts.allowedHosts ?? [],
     webDir: dir,
+    controlToken: "secret-token",
+    shutdown: opts.onShutdown,
   });
   await new Promise<void>((r) => app.server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -151,6 +153,24 @@ describe("HTTP password", () => {
       assert.equal((await fetch(`${s.base}/api/notes`, { headers: { Authorization: bad } })).status, 401);
       const good = "Basic " + Buffer.from("anything:correct horse").toString("base64");
       assert.equal((await fetch(`${s.base}/api/notes`, { headers: { Authorization: good } })).status, 200);
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+describe("local shutdown", () => {
+  test("needs the control token, works without the password", async () => {
+    let stopped = 0;
+    const s = await start(hashPassword("long enough pw"), { onShutdown: () => stopped++ });
+    try {
+      const post = (token?: string) =>
+        fetch(`${s.base}/api/shutdown`, { method: "POST", headers: { "X-Notes-App": "1", ...(token ? { "X-Notes-Control": token } : {}) }, body: "{}" });
+      assert.equal((await post()).status, 403);
+      assert.equal((await post("wrong-token!")).status, 403);
+      assert.equal((await post("secret-token")).status, 200);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(stopped, 1);
     } finally {
       await s.close();
     }
