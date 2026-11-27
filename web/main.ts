@@ -4,6 +4,9 @@ import type { NoteMeta, SyncStatusDto } from "../shared/types.ts";
 import { linkKey, resolveLink } from "../shared/links.ts";
 import { inMode, MODE_FOLDER, MODE_LABEL, modeFolderOf } from "../shared/modes.ts";
 import { ModeStore } from "./state/mode.ts";
+import { IdeStore } from "./state/ide.ts";
+import { Explorer } from "./ui/explorer.ts";
+import { DiffDialog } from "./ui/diffview.ts";
 import { api, ApiError, subscribe } from "./api.ts";
 import { BufferStore } from "./state/buffers.ts";
 import { Workspace } from "./state/workspace.ts";
@@ -25,8 +28,11 @@ import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 const workspace = new Workspace();
 const buffers = new BufferStore();
 const mode = new ModeStore();
+const ide = new IdeStore();
 /** Every note, both modes (links and conflict copies can cross modes). */
 let notes: NoteMeta[] = [];
+/** IDE mode: notes and code files of the current mode, by path. */
+let files: NoteMeta[] = [];
 /** The notes of the current mode: what the sidebar, switcher and daily note use. */
 function modeNotes(): NoteMeta[] {
   return notes.filter((n) => inMode(n.path, mode.value));
@@ -47,6 +53,27 @@ async function createNote(title: string, toSide = false): Promise<void> {
     grid.focusActive();
   } catch (err) {
     toast(`Couldn't create the note: ${(err as Error).message}`, "error");
+  }
+}
+
+/** IDE mode: make an empty file (path inside the current mode's folder) and open it. */
+async function createFile(rel: string): Promise<void> {
+  // Windows-style separators become "/"; leading slashes are dropped.
+  const clean = rel.split(String.fromCharCode(92)).join("/").replace(/^\/+/, "");
+  if (!clean) return;
+  const path = `${MODE_FOLDER[mode.value]}/${clean}`;
+  try {
+    const file = await api.createFile(path);
+    buffers.adopt(file.path, file.text, file.hash);
+    workspace.open(file.path);
+    await refreshNotes();
+    grid.focusActive();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      openNote(path, false); // already there: just open it
+      return;
+    }
+    toast(`Couldn't create the file: ${(err as Error).message}`, "error");
   }
 }
 
@@ -113,10 +140,15 @@ async function refreshNotes(): Promise<void> {
   refreshing = (async () => {
     try {
       notes = await api.list();
+      if (ide.value) {
+        files = await api.files(mode.value);
+        explorer.setFiles(files);
+      }
       rebuildLinkKeys();
       sidebar.setNotes(modeNotes());
       grid.notesChanged();
       sidebar.setActivePath(workspace.active.notePath);
+      explorer.setActivePath(workspace.active.notePath);
     } catch {
       /* server down: status bar already says so */
     } finally {
@@ -143,6 +175,12 @@ async function syncNow(): Promise<void> {
 
 // --- layout ------------------------------------------------------------------
 
+const explorer = new Explorer({
+  mode: () => mode.value,
+  open: (path, toSide) => openNote(path, toSide),
+  showDiff: (req) => void diffDialog.show(req),
+});
+
 const sidebar = new Sidebar({
   showTrash: () => void trashDialog.show(),
   today: openDailyNote,
@@ -151,11 +189,25 @@ const sidebar = new Sidebar({
   collapse: () => setSidebarOpen(false),
   mode: () => mode.value,
   setMode: (m) => mode.set(m),
+  createFile,
+  explorer: explorer.el,
 });
 mode.onChange(() => {
   sidebar.modeChanged();
   sidebar.setNotes(modeNotes());
+  if (ide.value) {
+    void refreshNotes();
+    if (explorer.showingChanges) void explorer.refreshChanges();
+  }
 });
+/** IDE mode on/off: file tree and changes in the sidebar, "Go to" includes code files. */
+function applyIde(): void {
+  document.documentElement.dataset.ide = ide.value ? "on" : "off";
+  sidebar.setIde(ide.value);
+  explorer.setActivePath(workspace.active.notePath);
+  if (ide.value) void refreshNotes();
+}
+ide.onChange(() => applyIde());
 sidebar.modeChanged();
 
 /** Today's note, titled YYYY-MM-DD (local date): open it, or create it. */
@@ -212,7 +264,7 @@ const grid = new PaneGrid({
 });
 
 const switcher = new QuickSwitcher({
-  notes: () => modeNotes(),
+  notes: () => (ide.value ? files : modeNotes()),
   open: openNote,
   create: (title, toSide) => void createNote(title, toSide),
   cancel: () => grid.focusActive(),
@@ -247,7 +299,8 @@ statusbar.el.append(
 
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
-const topbar = new TopBar(appearance, { goto: () => switcher.show() });
+const topbar = new TopBar(appearance, { goto: () => switcher.show(), ide });
+const diffDialog = new DiffDialog({ open: (path) => openNote(path, false), onClosed: () => grid.focusActive() });
 appearance.onChange((a, changed) => {
   if (changed.some((k) => k === "lineNumbers" || k === "activeLine" || k === "spellcheck")) {
     grid.applyEditorPrefs({ lineNumbers: a.lineNumbers, activeLine: a.activeLine, spellcheck: a.spellcheck });
@@ -256,7 +309,7 @@ appearance.onChange((a, changed) => {
   requestAnimationFrame(() => grid.remeasure());
 });
 const main = h("main", { class: "main" }, topbar.el, banner.el, grid.el, statusbar.el);
-const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el, historyDialog.el);
+const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el, historyDialog.el, diffDialog.el);
 
 function showNewNote(): void {
   setSidebarOpen(true);
@@ -299,6 +352,7 @@ workspace.onChange((s, structural) => {
   if (structural) {
     grid.render();
     sidebar.setActivePath(workspace.active.notePath);
+    explorer.setActivePath(workspace.active.notePath);
   }
 });
 
@@ -346,7 +400,7 @@ window.addEventListener(
     }
     if (e.key === "Escape") {
       // Close whichever dialog is open, wherever the focus is.
-      for (const d of [historyDialog, trashDialog, settingsDialog]) {
+      for (const d of [historyDialog, trashDialog, settingsDialog, diffDialog]) {
         if (d.isOpen) {
           e.preventDefault();
           d.close();
@@ -408,12 +462,22 @@ window.addEventListener("blur", () => setModHeld(false));
 
 // --- server events -------------------------------------------------------------
 
+let changesTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshChangesSoon(): void {
+  if (changesTimer) return;
+  changesTimer = setTimeout(() => {
+    changesTimer = null;
+    void explorer.refreshChanges();
+  }, 800);
+}
+
 let wasConnected = true;
 const connectEvents = () => subscribe(
   (ev) => {
     switch (ev.type) {
       case "status":
         setStatus(ev.status);
+        if (ide.value && explorer.showingChanges) refreshChangesSoon();
         break;
       case "note-changed":
         void buffers.remoteChanged(ev.path, ev.hash);
@@ -423,6 +487,7 @@ const connectEvents = () => subscribe(
         break;
       case "notes-changed":
         refreshNotesSoon();
+        if (ide.value && explorer.showingChanges) refreshChangesSoon();
         setTimeout(() => void warmOfflineCache(), 3000);
         break;
       case "reconfigured":
@@ -497,6 +562,7 @@ async function boot(): Promise<void> {
   statusbar.setMachine(info.machineName);
   document.title = `Notes · ${info.machineName}`;
   narrowSidebarOpen = !workspace.active.notePath;
+  applyIde();
   applyChrome();
   const recovered = await buffers.recoverStash();
   if (recovered) toast(`Recovered ${recovered} unsaved note${recovered === 1 ? "" : "s"} from the last session.`, "info");
@@ -508,6 +574,7 @@ async function boot(): Promise<void> {
   }
   grid.render();
   sidebar.setActivePath(workspace.active.notePath);
+  explorer.setActivePath(workspace.active.notePath);
   if (!status) api.status().then(setStatus, () => undefined);
   registerOffline();
 }

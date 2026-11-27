@@ -13,11 +13,11 @@ import type { Queue } from "./git.ts";
 import { extractTitle, parseTags, splitFrontMatter } from "../shared/markdown.ts";
 import { conflictCopyName, isConflictCopy } from "./sync.ts";
 import { MODE_FOLDER, modeFolderOf, type Mode } from "../shared/modes.ts";
+import { baseName, isNotePath, isTextFile, SKIP_DIRS } from "../shared/files.ts";
 
 export { extractTitle, parseTags, splitFrontMatter };
 
 export { NOTE_EXT } from "../shared/markdown.ts";
-import { NOTE_EXT } from "../shared/markdown.ts";
 
 export function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
@@ -49,19 +49,22 @@ export function noteFilename(title: string, d: Date = new Date()): string {
 }
 
 export function metaFor(relPath: string, text: string, modifiedMs: number, hash: string): NoteMeta {
+  const note = isNotePath(relPath);
   return {
     path: relPath,
     hash,
-    title: extractTitle(text, relPath),
+    // Code and text files are named by their filename, not their first line.
+    title: note ? extractTitle(text, relPath) : baseName(relPath),
     modifiedMs,
-    tags: parseTags(splitFrontMatter(text).yaml),
+    tags: note ? parseTags(splitFrontMatter(text).yaml) : [],
     conflict: isConflictCopy(relPath),
   };
 }
 
 /**
  * Validate a client-supplied note path and resolve it under `root`.
- * Rejects absolute paths, `..`, hidden segments and non-Markdown files.
+ * Rejects absolute paths, `..`, hidden segments, and files that are neither
+ * notes nor text/code files (see shared/files.ts).
  */
 export function resolveNotePath(root: string, rel: string): string {
   if (typeof rel !== "string" || !rel || rel.length > 512) throw new BadPath("Invalid note path");
@@ -70,7 +73,7 @@ export function resolveNotePath(root: string, rel: string): string {
   if (norm !== rel || path.posix.isAbsolute(norm) || /^[A-Za-z]:/.test(norm)) throw new BadPath("Invalid note path");
   const segs = norm.split("/");
   if (segs.some((s) => s === ".." || s === "." || s.startsWith("."))) throw new BadPath("Invalid note path");
-  if (!NOTE_EXT.test(norm)) throw new BadPath("Notes must be .md files");
+  if (!isTextFile(norm)) throw new BadPath("Only notes and text or code files can be opened here");
   const abs = path.resolve(root, ...segs);
   if (!abs.startsWith(path.resolve(root) + path.sep)) throw new BadPath("Invalid note path");
   return abs;
@@ -83,6 +86,7 @@ export class TooLarge extends Error {}
 export const MAX_NOTE_BYTES = 2 * 1024 * 1024;
 export class Changed extends Error {}
 export class NotFound extends Error {}
+export class Exists extends Error {}
 
 // ---------------------------------------------------------------------------
 
@@ -141,7 +145,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return resolveNotePath(this.trashRoot, rel);
   }
 
-  /** All note paths under the root (recursive, skipping hidden folders such as .trash). */
+  /**
+   * All note and text/code file paths under the root (recursive), skipping
+   * hidden folders such as .trash and .git, dependency caches (SKIP_DIRS),
+   * and files over MAX_NOTE_BYTES.
+   */
   async walk(root: string = this.root): Promise<string[]> {
     const out: string[] = [];
     const visit = async (dirAbs: string, dirRel: string) => {
@@ -152,10 +160,13 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         return;
       }
       for (const e of entries) {
-        if (e.name.startsWith(".") || e.name === "node_modules") continue;
+        if (e.name.startsWith(".")) continue;
         const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
-        if (e.isDirectory()) await visit(path.join(dirAbs, e.name), rel);
-        else if (e.isFile() && NOTE_EXT.test(e.name)) out.push(rel);
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) await visit(path.join(dirAbs, e.name), rel);
+        } else if (e.isFile() && isTextFile(e.name)) {
+          if (isNotePath(e.name) || ((await fs.stat(path.join(dirAbs, e.name)).catch(() => null))?.size ?? Infinity) <= MAX_NOTE_BYTES) out.push(rel);
+        }
       }
     };
     await visit(root, "");
@@ -186,6 +197,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         continue;
       }
       if (!st.isFile()) continue;
+      if (!isNotePath(rel) && st.size > MAX_NOTE_BYTES) {
+        // A code file grew past the limit: stop tracking it (never opened or written).
+        if (this.known.delete(rel)) deleted.push(rel);
+        continue;
+      }
       seen.add(rel);
       const prev = this.known.get(rel);
       if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue;
@@ -209,9 +225,24 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return { changed, deleted };
   }
 
+  /** Notes (Markdown files), newest first. */
   async list(): Promise<NoteMeta[]> {
     await this.scan();
-    return [...this.known.values()].map((k) => k.meta).sort((a, b) => b.modifiedMs - a.modifiedMs);
+    return [...this.known.values()].map((k) => k.meta).filter((m) => isNotePath(m.path)).sort((a, b) => b.modifiedMs - a.modifiedMs);
+  }
+
+  /** Every file the app opens (notes and text/code files), by path, with sizes. */
+  async files(): Promise<(NoteMeta & { size: number })[]> {
+    await this.scan();
+    return [...this.known.values()].map((k) => ({ ...k.meta, size: k.size })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  }
+
+  /** New empty file at a path the client chose (IDE mode). Refuses if it exists. */
+  async createFile(rel: string): Promise<NoteContent> {
+    const abs = this.resolve(rel);
+    if (await exists(abs)) throw new Exists(`${rel} already exists`);
+    const { hash } = await this.write(rel, "", null);
+    return { path: rel, text: "", hash };
   }
 
   async read(rel: string): Promise<NoteContent> {
@@ -394,7 +425,8 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
       const all = await this.walk();
       const taken = new Set(all);
       for (const rel of all) {
-        if (modeFolderOf(rel)) continue;
+        // Only notes move; code and text files stay put (moving a project could break it).
+        if (modeFolderOf(rel) || !isNotePath(rel)) continue;
         const src = this.resolve(rel);
         const buf = await fs.readFile(src).catch(() => null);
         if (!buf) continue;
@@ -433,7 +465,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
    * than recreating it at the root.
    */
   private async followMove(rel: string): Promise<string> {
-    if (modeFolderOf(rel)) return rel;
+    if (modeFolderOf(rel) || !isNotePath(rel)) return rel;
     if (await exists(this.resolve(rel))) return rel;
     // Root notes only ever move into Home/ (or a "home" folder made by hand).
     for (const folder of [MODE_FOLDER.home, MODE_FOLDER.home.toLowerCase()]) {

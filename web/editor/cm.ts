@@ -7,10 +7,12 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { Annotation, Compartment, EditorSelection, EditorState, Transaction, type Extension, type Text } from "@codemirror/state";
+import { Annotation, Compartment, EditorSelection, EditorState, Facet, Prec, Transaction, type Extension, type Text } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, placeholder, dropCursor } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { BufferStore, BufferView, NoteBuffer } from "../state/buffers.ts";
+import { isNotePath } from "../../shared/files.ts";
+import { codeHighlight, fenceLanguage, languageForPath } from "./languages.ts";
 import { taskCheckboxes } from "./tasks.ts";
 import { linkAtCursor, wikiLinks, type LinkHost } from "./wikilinks.ts";
 
@@ -70,6 +72,15 @@ const theme = EditorView.theme({
   ".cm-completionDetail": { color: "var(--faint)", marginLeft: "8px", fontStyle: "normal" },
 });
 
+/** Code files (IDE mode): monospace, full width, no wrapping, always line numbers. */
+const codeTheme = EditorView.theme({
+  ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "0.88em", lineHeight: "1.55" },
+  ".cm-content": { maxWidth: "none", margin: "0", padding: "12px 16px 40vh 8px" },
+});
+
+/** True in editors showing a code or text file rather than a note. */
+const isCodeEditor = Facet.define<boolean, boolean>({ combine: (v) => v.some(Boolean) });
+
 /** Editor options from the Appearance panel, switchable on live editors. */
 export interface EditorPrefs {
   lineNumbers: boolean;
@@ -79,17 +90,18 @@ export interface EditorPrefs {
 
 const prefsSlot = new Compartment();
 
-function prefsExtension(p: EditorPrefs): Extension {
+function prefsExtension(p: EditorPrefs, code: boolean): Extension {
+  const spell = p.spellcheck && !code;
   return [
-    p.lineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : [],
+    p.lineNumbers || code ? [lineNumbers(), highlightActiveLineGutter()] : [],
     p.activeLine ? highlightActiveLine() : [],
-    EditorView.contentAttributes.of({ spellcheck: String(p.spellcheck), autocorrect: p.spellcheck ? "on" : "off", autocapitalize: "sentences" }),
+    EditorView.contentAttributes.of({ spellcheck: String(spell), autocorrect: spell ? "on" : "off", autocapitalize: code ? "off" : "sentences" }),
   ];
 }
 
 /** Apply new editor options to an open editor (and re-measure after font changes). */
 export function applyEditorPrefs(view: EditorView, p: EditorPrefs): void {
-  view.dispatch({ effects: prefsSlot.reconfigure(prefsExtension(p)) });
+  view.dispatch({ effects: prefsSlot.reconfigure(prefsExtension(p, view.state.facet(isCodeEditor))) });
 }
 
 export interface PaneEditor extends BufferView {
@@ -113,6 +125,19 @@ export function createEditor(opts: {
   const len = buffer.doc.length;
   const clamp = (n: number) => Math.max(0, Math.min(len, n));
   const selection = opts.cursor ? EditorSelection.single(clamp(opts.cursor.anchor), clamp(opts.cursor.head)) : undefined;
+  const code = !isNotePath(buffer.path);
+  // Notes: Markdown (with highlighted code fences), wiki links, checkboxes. Code: its language.
+  const kind: Extension = code
+    ? [isCodeEditor.of(true), languageForPath(buffer.path), syntaxHighlighting(codeHighlight), Prec.high(codeTheme)]
+    : [
+        EditorView.lineWrapping,
+        markdown({ base: markdownLanguage, codeLanguages: fenceLanguage }),
+        syntaxHighlighting(markdownHighlight),
+        syntaxHighlighting(codeHighlight),
+        placeholder("Start writing…"),
+        wikiLinks(opts.links),
+        taskCheckboxes(),
+      ];
 
   let paneEditor!: PaneEditor;
   const view = new EditorView({
@@ -124,15 +149,12 @@ export function createEditor(opts: {
         history(),
         drawSelection(),
         dropCursor(),
-        prefsSlot.of(prefsExtension(opts.prefs)),
+        prefsSlot.of(prefsExtension(opts.prefs, code)),
         indentOnInput(),
         bracketMatching(),
         highlightSelectionMatches(),
         search({ top: true }),
-        EditorView.lineWrapping,
-        markdown({ base: markdownLanguage }),
-        syntaxHighlighting(markdownHighlight),
-        placeholder("Start writing…"),
+        kind,
         keymap.of([
           ...(opts.extraKeys ?? []),
           {
@@ -149,8 +171,6 @@ export function createEditor(opts: {
           ...searchKeymap,
           indentWithTab,
         ]),
-        wikiLinks(opts.links),
-        taskCheckboxes(),
         theme,
         EditorView.domEventHandlers({
           focus: () => {

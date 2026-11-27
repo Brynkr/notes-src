@@ -15,8 +15,20 @@ export class TopBar {
   private readonly appearanceBtn: HTMLButtonElement;
   private readonly store: AppearanceStore;
 
-  constructor(store: AppearanceStore, opts: { goto: () => void }) {
+  /** Shows whether IDE mode is on. */
+  readonly ideBtn: HTMLButtonElement;
+
+  constructor(store: AppearanceStore, opts: { goto: () => void; ide: { value: boolean; set(on: boolean): void; onChange(fn: (on: boolean) => void): void } }) {
     this.store = store;
+    this.ideBtn = h("button", {
+      class: "icon-btn ide-btn",
+      title: "IDE mode: file tree, code highlighting, git changes",
+      "aria-label": "IDE mode",
+      "aria-pressed": String(opts.ide.value),
+      html: icons.code,
+      onclick: () => opts.ide.set(!opts.ide.value),
+    });
+    opts.ide.onChange((on) => this.ideBtn.setAttribute("aria-pressed", String(on)));
     this.panel = new AppearancePanel(store, () => this.appearanceBtn.focus());
     this.zoomLabel = h("button", {
       class: "zoom-value",
@@ -51,6 +63,7 @@ export class TopBar {
         this.zoomLabel,
         h("button", { class: "icon-btn", title: `Larger text (${modKey}++)`, "aria-label": "Larger text", html: icons.plus, onclick: () => store.zoomBy(ZOOM_STEP) }),
       ),
+      this.ideBtn,
       h("div", { class: "appearance-anchor" }, this.appearanceBtn, this.panel.el),
     );
     this.panel.onToggle = (open) => this.appearanceBtn.setAttribute("aria-expanded", String(open));

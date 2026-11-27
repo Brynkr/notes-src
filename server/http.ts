@@ -18,6 +18,8 @@ import zlib from "node:zlib";
 import { keysForNote } from "../shared/links.ts";
 import { inMode, isMode, type Mode } from "../shared/modes.ts";
 import type {
+  ChangeEntry,
+  CommitEntry,
   AppInfo,
   Backlink,
   HistoryEntry,
@@ -31,7 +33,7 @@ import type {
   SyncStatusDto,
 } from "../shared/types.ts";
 import { isLoopback, verifyPassword } from "./config.ts";
-import { BadPath, Changed, NotFound, TooLarge, type NoteStore } from "./notes.ts";
+import { BadPath, Changed, Exists, NotFound, TooLarge, type NoteStore } from "./notes.ts";
 import type { SearchIndex } from "./search.ts";
 import { SettingsError } from "./settings.ts";
 
@@ -45,6 +47,9 @@ export interface RuntimeLike {
   saved(paths: string[]): void;
   history?(notePath: string): Promise<HistoryEntry[]>;
   version?(commit: string, file: string): Promise<string>;
+  changes?(mode: Mode | null): Promise<ChangeEntry[]>;
+  commits?(mode: Mode | null, limit?: number): Promise<CommitEntry[]>;
+  fileAt?(commit: string, path: string): Promise<string | null>;
 }
 
 export interface SettingsHandlers {
@@ -209,6 +214,44 @@ export function createApp(ctx: AppContext) {
         const mode = modeParam(url);
         const all = await rt().store.list();
         return send(res, 200, mode ? all.filter((n) => inMode(n.path, mode)) : all);
+      }
+      case "GET /api/files": {
+        // Notes plus text/code files (IDE mode), sorted by path.
+        const mode = modeParam(url);
+        const all = await rt().store.files();
+        return send(res, 200, mode ? all.filter((n) => inMode(n.path, mode)) : all);
+      }
+      case "POST /api/files": {
+        const r = rt();
+        const body = await readJson<{ path?: string }>(req);
+        const file = await r.store.createFile(String(body.path ?? ""));
+        r.saved([file.path]);
+        broadcast({ type: "notes-changed" });
+        return send(res, 201, file);
+      }
+      case "GET /api/git/changes": {
+        const r = rt();
+        if (!r.changes) throw new HttpError(404, "Not found");
+        return send(res, 200, await r.changes(modeParam(url)));
+      }
+      case "GET /api/git/commits": {
+        const r = rt();
+        if (!r.commits) throw new HttpError(404, "Not found");
+        const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
+        return send(res, 200, await r.commits(modeParam(url), limit));
+      }
+      case "GET /api/git/file": {
+        const r = rt();
+        if (!r.fileAt) throw new HttpError(404, "Not found");
+        let text: string | null;
+        try {
+          text = await r.fileAt(url.searchParams.get("commit") ?? "", url.searchParams.get("path") ?? "");
+        } catch (err) {
+          if (err instanceof BadPath) throw err;
+          throw new HttpError(400, (err as Error).message);
+        }
+        if (text === null) throw new HttpError(404, "That file isn't in that commit.");
+        return send(res, 200, { text });
       }
       case "GET /api/note": {
         const p = url.searchParams.get("path") ?? "";
@@ -437,7 +480,7 @@ export function createApp(ctx: AppContext) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
       if (err instanceof BadPath || err instanceof SettingsError) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
-      if (err instanceof Changed) return send(res, 409, { error: err.message });
+      if (err instanceof Changed || err instanceof Exists) return send(res, 409, { error: err.message });
       if (err instanceof TooLarge) return send(res, 413, { error: err.message });
       console.error(err);
       send(res, 500, { error: (err as Error).message });

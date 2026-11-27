@@ -10,6 +10,10 @@ export interface SidebarDeps {
   today: () => void;
   open: (path: string, toSide: boolean) => void;
   create: (title: string) => Promise<void>;
+  /** IDE mode: a new (empty) file at a path inside the current mode's folder. */
+  createFile: (pathInMode: string) => Promise<void>;
+  /** IDE mode's file tree and changes, shown instead of the search box and note list. */
+  explorer: HTMLElement;
   collapse: () => void;
   mode: () => Mode;
   setMode: (mode: Mode) => void;
@@ -23,6 +27,9 @@ export class Sidebar {
   private readonly newInput: HTMLInputElement;
   private readonly countEl: HTMLElement;
   private readonly modeButtons: HTMLButtonElement[];
+  private readonly searchWrap: HTMLElement;
+  private readonly footEl: HTMLElement;
+  private ide = false;
   private notes: NoteMeta[] = [];
   private hits: SearchHit[] | null = null;
   private activePath: string | null = null;
@@ -61,7 +68,8 @@ export class Sidebar {
           e.preventDefault();
           const title = this.newInput.value;
           this.hideNew();
-          await this.deps.create(title);
+          if (this.ide) await this.deps.createFile(title.trim());
+          else await this.deps.create(title);
         },
       },
       this.newInput,
@@ -85,11 +93,25 @@ export class Sidebar {
         h("button", { class: "icon-btn hide-wide", title: "Hide sidebar", "aria-label": "Hide sidebar", html: icons.sidebar, onclick: () => this.deps.collapse() }),
       ),
       h("div", { class: "segmented mode-switch", role: "group", "aria-label": "Mode" }, ...this.modeButtons),
-      h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput),
+      (this.searchWrap = h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput)),
       this.newForm,
       this.list,
-      h("div", { class: "sidebar-foot" }, `${modKey}+P go to note · ${modKey}+K search`),
+      deps.explorer,
+      (this.footEl = h("div", { class: "sidebar-foot" }, `${modKey}+P go to note · ${modKey}+K search`)),
     );
+  }
+
+  /** IDE mode: file tree instead of the note list; + makes a file instead of a note. */
+  setIde(on: boolean): void {
+    this.ide = on;
+    this.el.classList.toggle("is-ide", on);
+    this.searchWrap.hidden = on;
+    this.list.hidden = on;
+    this.countEl.hidden = on;
+    this.deps.explorer.hidden = !on;
+    this.footEl.textContent = on ? `${modKey}+P go to file · Ctrl+click opens to the side` : `${modKey}+P go to note · ${modKey}+K search`;
+    this.newInput.placeholder = on ? "New file, e.g. scripts/hello.py" : "Title for the new note";
+    this.newInput.setAttribute("aria-label", on ? "New file path" : "New note title");
   }
 
   /** Show which mode is on; results from the other mode are re-queried. */

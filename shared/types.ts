@@ -34,6 +34,24 @@ export interface SaveResponse {
   path?: string;
 }
 
+/** A file changed in the working tree or in a commit (IDE mode's Changes panel). */
+export interface ChangeEntry {
+  path: string;
+  /** A added, M modified, D deleted. */
+  status: "A" | "M" | "D";
+}
+
+export interface CommitEntry {
+  commit: string;
+  /** First parent, for diffing; null for the first commit. */
+  parent: string | null;
+  timeMs: number;
+  /** Machine name from an auto-commit message, if it is one. */
+  machine: string | null;
+  message: string;
+  files: ChangeEntry[];
+}
+
 export type SyncState = "synced" | "syncing" | "offline" | "conflict" | "error" | "local" | "disabled";
 
 export interface SyncStatusDto {

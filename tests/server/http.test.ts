@@ -121,6 +121,26 @@ describe("HTTP API", () => {
     assert.equal(fs.existsSync(`${s.dir}/old.md`), false);
   });
 
+  test("IDE mode: list files by mode, create a file, save code, refuse binaries", async () => {
+    const mk = (p: string) => fetch(`${s.base}/api/files`, { method: "POST", headers: H, body: JSON.stringify({ path: p }) });
+    const r = await mk("Work/tools/run.py");
+    assert.equal(r.status, 201);
+    const f = await r.json();
+    assert.equal((await mk("Work/tools/run.py")).status, 409, "exists");
+    assert.equal((await mk("Work/tools/pic.png")).status, 400, "not a text file");
+    const save = await fetch(`${s.base}/api/note`, { method: "PUT", headers: H, body: JSON.stringify({ path: f.path, text: "print('hi')\n", baseHash: f.hash }) });
+    assert.equal(save.status, 200);
+    const files = (await (await fetch(`${s.base}/api/files?mode=work`)).json()) as { path: string; title: string; size: number }[];
+    const run = files.find((x) => x.path === "Work/tools/run.py");
+    assert.equal(run?.title, "run.py");
+    assert.equal(run?.size, 12);
+    assert.ok(files.every((x) => x.path.startsWith("Work/")));
+    const notes = (await (await fetch(`${s.base}/api/notes`)).json()) as { path: string }[];
+    assert.ok(!notes.some((n) => n.path.endsWith(".py")), "code files aren't notes");
+    // The fake runtime has no git: these answer 404 rather than failing.
+    assert.equal((await fetch(`${s.base}/api/git/changes`)).status, 404);
+  });
+
   test("mutations need the X-Notes-App header (CSRF)", async () => {
     const r = await fetch(`${s.base}/api/notes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     assert.equal(r.status, 403);

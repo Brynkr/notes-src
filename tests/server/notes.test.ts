@@ -48,10 +48,14 @@ describe("filenames and titles", () => {
   });
 
   test("path validation", () => {
-    for (const bad of ["../x.md", "/etc/x.md", ".git/config", "a/../../x.md", "notes.txt", "a\\b.md", ".hidden.md", "C:/x.md", ""]) {
+    for (const bad of ["../x.md", "/etc/x.md", ".git/config", "a/../../x.md", "photo.png", "budget.xlsx", "Makefile", "a\\b.md", ".hidden.md", "C:/x.md", "../x.py", ""]) {
       assert.throws(() => resolveNotePath(dir, bad), `should reject ${JSON.stringify(bad)}`);
     }
     assert.equal(resolveNotePath(dir, "sub/a.md"), path.join(dir, "sub", "a.md"));
+    // IDE mode: text and code files by extension.
+    for (const ok of ["notes.txt", "Work/proj/main.py", "src/x.cpp", "lib/y.h", "app.ts", "run.ps1", "conf.toml"]) {
+      assert.equal(resolveNotePath(dir, ok), path.join(dir, ...ok.split("/")));
+    }
   });
 });
 
@@ -306,5 +310,37 @@ describe("Home/Work modes", () => {
     assert.equal(fs.readFileSync(path.join(dir, "Home", "a.md"), "utf8"), "# A\n\nfrom an old tab\n");
     // A genuinely new root note is written where asked.
     assert.equal((await store.write("new.md", "# N\n", null)).path, undefined);
+  });
+});
+
+describe("IDE mode: text and code files", () => {
+  test("files() lists code files, list() only notes; titles are filenames; caches and big files skipped", async () => {
+    await store.write("Work/proj/main.py", "import os\n", null);
+    await store.write("Work/note.md", "# Note\n", null);
+    fs.mkdirSync(path.join(dir, "Work", "proj", "node_modules", "x"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "Work", "proj", "node_modules", "x", "index.js"), "x");
+    fs.writeFileSync(path.join(dir, "Work", "proj", "data.csv"), "a,".repeat(1_100_000)); // 2.2 MB
+    fs.writeFileSync(path.join(dir, "Work", "proj", "logo.png"), "png");
+    const files = await store.files();
+    assert.deepEqual(files.map((f) => f.path), ["Work/note.md", "Work/proj/main.py"]);
+    assert.equal(files.find((f) => f.path.endsWith(".py"))!.title, "main.py");
+    assert.deepEqual(files.find((f) => f.path.endsWith(".py"))!.tags, []);
+    assert.deepEqual((await store.list()).map((n) => n.path), ["Work/note.md"]);
+  });
+
+  test("createFile makes an empty file and refuses an existing one or a binary type", async () => {
+    const f = await store.createFile("Work/src/app.ts");
+    assert.equal(f.text, "");
+    assert.equal(fs.readFileSync(path.join(dir, "Work", "src", "app.ts"), "utf8"), "");
+    await assert.rejects(store.createFile("Work/src/app.ts"), /already exists/);
+    await assert.rejects(store.createFile("Work/a.png"), /Only notes and text or code files/);
+  });
+
+  test("code files get conflict copies with their own extension, and stay out of Home/ moves", async () => {
+    const f = await store.write("tool.py", "print(1)\n", null);
+    fs.writeFileSync(path.join(dir, "tool.py"), "print(2)\n"); // changed underneath
+    const r = await store.write("tool.py", "print(3)\n", f.hash);
+    assert.equal(r.conflictCopy, "tool (conflict 2026-11-27 laptop).py");
+    assert.deepEqual(await store.moveIntoModes(), [], "code files are not moved into Home/");
   });
 });

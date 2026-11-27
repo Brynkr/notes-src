@@ -6,7 +6,8 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { NOTE_EXT, type NoteStore } from "./notes.ts";
+import type { NoteStore } from "./notes.ts";
+import { isTextFile, SKIP_DIRS } from "../shared/files.ts";
 
 export interface WatcherEvents {
   changed: [paths: string[]];
@@ -41,8 +42,8 @@ export class NoteWatcher extends EventEmitter<WatcherEvents> {
           this.fullRescan = true;
         } else {
           const rel = filename.toString().split(path.sep).join("/");
-          if (rel.split("/").some((s) => s.startsWith("."))) return; // .git, temp files
-          if (NOTE_EXT.test(rel)) this.pending.add(rel);
+          if (rel.split("/").some((s) => s.startsWith(".") || SKIP_DIRS.has(s))) return; // .git, temp files, node_modules
+          if (isTextFile(rel)) this.pending.add(rel);
           else this.fullRescan = true; // a folder was added, removed or renamed
         }
         this.schedule();

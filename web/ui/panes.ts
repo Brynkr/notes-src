@@ -2,6 +2,7 @@
 
 import { conflictInfo, originalOf } from "../../shared/conflicts.ts";
 import { extractTitle } from "../../shared/markdown.ts";
+import { baseName, isNotePath, languageName } from "../../shared/files.ts";
 import type { Backlink } from "../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
 import { applyEditorPrefs, createEditor, minimalChange, type EditorPrefs, type PaneEditor } from "../editor/cm.ts";
@@ -32,6 +33,7 @@ class Pane {
   readonly el: HTMLElement;
   private readonly titleEl: HTMLElement;
   private readonly dotEl: HTMLElement;
+  private readonly langEl: HTMLElement;
   private readonly body: HTMLElement;
   private readonly deleteBtn: HTMLButtonElement;
   private readonly historyBtn: HTMLButtonElement;
@@ -50,6 +52,7 @@ class Pane {
     this.deps = deps;
     this.titleEl = h("span", { class: "pane-title" });
     this.dotEl = h("span", { class: "dirty-dot", "aria-hidden": "true" });
+    this.langEl = h("span", { class: "pane-lang", hidden: true });
     this.historyBtn = h("button", {
       class: "icon-btn",
       title: "History",
@@ -76,6 +79,7 @@ class Pane {
         this.titleEl,
         this.dotEl,
         h("span", { class: "spacer" }),
+        this.langEl,
         this.historyBtn,
         this.deleteBtn,
         h("button", {
@@ -149,7 +153,7 @@ class Pane {
   async loadBacklinks(): Promise<void> {
     const path = this.notePath;
     const seq = ++this.backlinkSeq;
-    if (!path) {
+    if (!path || !isNotePath(path)) {
       this.backlinksEl.hidden = true;
       return;
     }
@@ -281,6 +285,7 @@ class Pane {
   private showEmpty(): void {
     this.titleEl.textContent = "No note";
     this.titleEl.removeAttribute("title");
+    this.langEl.hidden = true;
     this.dotEl.className = "dirty-dot";
     this.deleteBtn.hidden = true;
     this.historyBtn.hidden = true;
@@ -303,8 +308,11 @@ class Pane {
       if (!b) return;
       this.deleteBtn.hidden = false;
       this.historyBtn.hidden = false;
-      this.titleEl.textContent = extractTitle(b.doc.toString(), b.path);
+      const note = isNotePath(b.path);
+      this.titleEl.textContent = note ? extractTitle(b.doc.toString(), b.path) : baseName(b.path);
       this.titleEl.title = b.path;
+      this.langEl.hidden = note;
+      this.langEl.textContent = note ? "" : (languageName(b.path) ?? "");
       const state = b.lastError ? "error" : b.saving ? "saving" : b.dirty ? "dirty" : "clean";
       this.dotEl.className = `dirty-dot ${state}`;
       this.dotEl.title = { error: `Not saved: ${b.lastError}`, saving: "Saving…", dirty: "Unsaved changes", clean: "Saved" }[state];

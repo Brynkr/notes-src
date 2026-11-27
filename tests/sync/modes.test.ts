@@ -119,3 +119,22 @@ describe("Home/Work: moving root notes into Home/", () => {
     assert.equal(log.length, 3, "the move plus both earlier versions");
   });
 });
+
+describe("IDE mode: code files sync like notes", () => {
+  test("both machines edit the same lines of a code file: both kept, conflict copy keeps the extension, no markers", async () => {
+    const { A, B } = await pair({ "Work/proj/main.py": "def f():\n    return 1\n" });
+    A.write("Work/proj/main.py", "def f():\n    return 2  # A\n");
+    B.write("Work/proj/main.py", "def f():\n    return 3  # B\n");
+    await A.sync();
+    const st = await B.sync();
+    assert.equal(st.state, "conflict", "a conflict copy was made");
+    assert.equal(st.conflicts.length, 1);
+    await A.sync();
+    const files = norm(A.files());
+    const copy = files.find((f) => /^Work\/proj\/main \(conflict \d{4}-\d{2}-\d{2} A\)\.py$/.test(f));
+    assert.ok(copy, files.join(", "));
+    assert.equal(B.read("Work/proj/main.py"), "def f():\n    return 3  # B\n", "local version stays in place");
+    assert.equal(B.read(copy), "def f():\n    return 2  # A\n");
+    assertConverged(A, B);
+  });
+});

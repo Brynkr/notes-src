@@ -17,7 +17,7 @@ Raspberry Pi (web UI + API) ──────git───┘
 - Base URL: `http://<pi-address>:4747` (port configurable).
 - **Auth:** when a password is set (required when listening on the network), send HTTP Basic auth on every request. The username is ignored.
 - **Mutating requests** (`POST`, `PUT`, `DELETE`) must send the header `X-Notes-App: 1`. Bodies are JSON (`Content-Type: application/json`).
-- **Paths** are relative to the notes folder, use `/`, end in `.md`, and can't contain `..` or hidden segments. URL-encode them in query strings.
+- **Paths** are relative to the notes folder, use `/`, and can't contain `..` or hidden segments. URL-encode them in query strings. Notes end in `.md`. The note endpoints (`GET`/`PUT`/`DELETE /api/note`, history) also accept the text and code files that IDE mode opens, chosen by extension: `.py`, `.c`, `.cpp`, `.h`, `.js`, `.ts`, `.json`, `.rs`, `.go`, `.java`, `.sql`, `.yaml`, `.html`, `.css`, `.sh`, `.ps1`, `.toml`, `.lua`, `.txt` and a few more (the full list is `CODE_LANGUAGES` in `shared/files.ts`). Anything else is refused with `400`. `GET /api/notes` and search only ever return notes.
 - **Hashes** are lowercase hex SHA-256 of the file's exact bytes. They identify a version of a note.
 - Errors: JSON `{ "error": "message" }` with status `400` (bad input), `401` (password), `403` (missing header), `404` (no such note), `409` (changed since you saw it), `413` (note over 2 MB), `429` (too many wrong passwords; see `Retry-After`), `5xx`.
 - **Home and Work:** notes live in two top-level folders, `Home/` and `Work/` (the app's two modes). A note's mode is its first path segment, matched case-insensitively; anything else counts as Home. At startup the server moves notes outside both folders into `Home/` (keeping subfolders). A read or save at a note's old pre-`Home/` path is served from, and written to, its new place, and the response's `path` says where it now is. So an offline client that last saw `x.md` keeps working. Switch to the new path when you see it.
@@ -41,6 +41,11 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `POST /api/trash/empty` | `{}` | `{ count }` |
 | `GET /api/history?path=P` | | `[{ commit, timeMs, machine, message, file }]`: synced versions, newest first |
 | `GET /api/history/version?commit=C&file=F` | | `{ text }` of that version (`file` as returned by history) |
+| `GET /api/files[?mode=home\|work]` | | `NoteMeta[]` plus `size`, for notes and text/code files, sorted by path (IDE mode's file tree; a code file's `title` is its filename) |
+| `POST /api/files` | `{ path }` | `{ path, text: "", hash }`: a new empty file at that path; `409` if it exists, `400` if the type isn't allowed |
+| `GET /api/git/changes[?mode=home\|work]` | | `[{ path, status }]`: files changed since the last commit; `status` is `A`, `M` or `D` |
+| `GET /api/git/commits[?mode=home\|work&limit=N]` | | `[{ commit, parent, timeMs, machine, message, files: [{ path, status }] }]`: recent commits touching the notes folder, newest first (default 50) |
+| `GET /api/git/file?commit=C&path=P` | | `{ text }` of P at commit C (a hash or `HEAD`); `404` if it wasn't there |
 | `GET /api/search?q=Q[&mode=home\|work]` | | `[{ path, title, snippet }]`, optionally only one mode; `snippet` is plain text (Markdown stripped) with matches wrapped in `\u0001`…`\u0002` |
 | `GET /api/backlinks?path=P` | | `[{ path, title, context }]`: notes that `[[link]]` to P, with the linking line |
 | `POST /api/sync` | `{}` | runs a git sync now (waits for it), returns sync status |
