@@ -66,6 +66,8 @@ export interface AppContext {
   webDir: string;
   /** Graceful stop, requested from this machine (installer, `notes-app stop`). */
   shutdown?: () => void;
+  /** Read a web UI file (relative path) from somewhere other than webDir, e.g. inside the executable. */
+  readStatic?: (rel: string) => Buffer | null;
   /** Secret in a file only this user can read; lets local tools stop the server without the password. */
   controlToken?: string;
 }
@@ -335,10 +337,16 @@ export function createApp(ctx: AppContext) {
     const abs = path.resolve(ctx.webDir, "." + path.posix.normalize(rel));
     if (!abs.startsWith(path.resolve(ctx.webDir) + path.sep)) throw new HttpError(404, "Not found");
     let data: Buffer;
-    try {
-      data = fs.readFileSync(abs);
-    } catch {
-      throw new HttpError(404, "Not found");
+    if (ctx.readStatic) {
+      const hit = ctx.readStatic(path.relative(ctx.webDir, abs).split(path.sep).join("/"));
+      if (!hit) throw new HttpError(404, "Not found");
+      data = hit;
+    } else {
+      try {
+        data = fs.readFileSync(abs);
+      } catch {
+        throw new HttpError(404, "Not found");
+      }
     }
     const etag = `"${createHash("sha1").update(data).digest("base64url")}"`;
     if (req.headers["if-none-match"] === etag) {

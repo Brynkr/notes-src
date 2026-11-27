@@ -321,6 +321,8 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 | M7 polish | Done: settings screen, fuzzy quick switcher (Ctrl/Cmd+P), shortcuts, phone layout, dark mode, installers for Windows/macOS/Linux/Pi |
 | Later: wiki links + backlinks | Done (27 Nov) |
 | Later: per-note history | Done (27 Nov): history dialog with diff and restore |
+| Appearance (themes, fonts, zoom) | Done (28 Nov) |
+| Portable Windows exe | Done (28 Nov), built and tested in CI |
 | Later: tags UI, Markdown preview, draggable dividers | Not built |
 
 ## 13. Testing
@@ -418,6 +420,8 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 
 **28 Nov 2026: appearance.** A top bar holds "Go to note…", a text-zoom control and an Appearance pop-out (themes first, then fonts, text, layout, editor). 16 themes (8 light, 8 dark incl. high contrast) live as data in `web/appearance/themes.ts`, applied as CSS variables, with tints derived via `color-mix`; a unit test enforces WCAG contrast (body text ≥ 12:1, secondary text and accents ≥ 4.5:1). Other options: note font (5 system font stacks; no web fonts, so it works offline), interface font, line spacing, line width, borders (none/subtle/strong/cards via `--divider` and `[data-borders]`), corners (`--r-*`), spacing (`[data-density]`), line numbers / current line / spell check (a CodeMirror compartment, switched live), animations. Text zoom scales note text only (Ctrl/Cmd +/−/0). All per device in localStorage (`notes-app:appearance:v1`).
 
+**28 Nov 2026: portable Windows exe.** `npm run exe` (`scripts/build-exe.mjs`) makes a Node SEA: the server bundled to CommonJS (SEA entry points must be CJS on Node 22; `import.meta.url` is defined from `__filename`), `dist/web/**` embedded as `web/<path>` assets and served through `AppContext.readStatic`, injected into a copy of `node.exe` with `postject`, icon/version via `rcedit`, PE subsystem patched to GUI (2) so no console window opens. `server/sea.ts` wraps `node:sea`. In the exe: no command means `launch` (double-click), `launch` respawns the exe itself with the explicit `serve` command, settings/data go to `<exe dir>/Notes-data/{settings,data}` when writable (env vars still win), and fatal errors show a message box via hidden PowerShell since there's no console. Size is about 80–120 MB (it's the whole Node runtime). Git is still a system dependency. Not code-signed, so SmartScreen warns once. CLI output from the windowed exe isn't visible in a terminal; use the installer's `notes` or `node dist/server.js` for CLI work. CI job `exe-windows` checks the subsystem byte, launches it, does setup against a local bare repo, creates a note, syncs and checks the push landed, then stops it.
+
 **Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
 
 **Verified in CI (27 Nov 2026, run on Brynkr/notes-src):** unit tests on Linux/Windows/macOS × Node 22/24, browser tests, and install → launch → uninstall on Windows (PowerShell installer, shortcuts, Apps & features entry), macOS (LaunchAgent, app bundle) and Linux. The first run found a Windows-only bug (corrupt index file locked while deleting) and an over-long default machine name; both are fixed.
@@ -426,7 +430,7 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 
 **Next steps (suggested order)**
 
-1. Push to GitHub, check CI, tag `v0.2.0` for a release; install on the Windows PC and the Pi.
+1. Tag `v0.4.0` for a release (installers + portable exe); install on the Windows PC and the Pi.
 2. KindleHub client (Lua, `docs/API.md`), once the KindleHub repo and device details are available.
 3. Tags UI, Markdown preview, draggable dividers. Optional: auto-empty Trash after N days.
 4. Optional: rewrite `[[links]]` when a title changes (open question 11).

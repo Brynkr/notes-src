@@ -95,6 +95,8 @@ export function saveConfigFile(cfg: Partial<Config>): void {
 
 export interface Cli {
   command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch" | "configure" | "stop" | "has-password" | "running";
+  /** True when no command was given (the portable exe then launches). */
+  defaulted?: boolean;
   overrides: Partial<Config>;
   open: boolean;
   save: boolean;
@@ -102,7 +104,7 @@ export interface Cli {
 }
 
 export function parseArgs(argv: string[]): Cli {
-  const cli: Cli = { command: "serve", overrides: {}, open: false, save: false, allowNoPassword: false };
+  const cli: Cli = { command: "serve", overrides: {}, open: false, save: false, allowNoPassword: false, defaulted: true };
   const o = cli.overrides;
   const need = (i: number, flag: string) => {
     const v = argv[i + 1];
@@ -117,6 +119,10 @@ export function parseArgs(argv: string[]): Cli {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
+      case "serve":
+        cli.command = "serve";
+        cli.defaulted = false;
+        break;
       case "set-password":
       case "clear-password":
       case "help":
@@ -127,6 +133,7 @@ export function parseArgs(argv: string[]): Cli {
       case "has-password":
       case "running":
         cli.command = a;
+        cli.defaulted = false;
         break;
       case "-h":
       case "--help":

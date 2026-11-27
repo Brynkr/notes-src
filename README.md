@@ -39,6 +39,14 @@ The installer offers to install Node.js and Git with winget if they're missing. 
 
 When Notes opens, paste the repository URL and click **Test connection**. With an HTTPS URL, Git Credential Manager (part of Git for Windows) opens a GitHub sign-in the first time.
 
+### Windows, portable (no install)
+
+Download `Notes-<version>-windows-x64.exe` from the Releases page, put it in any folder (or on a USB stick) and double-click it. It's a single file with everything built in, including Node.js; only **Git for Windows** has to be installed for syncing (`winget install Git.Git`). Windows may show *Windows protected your PC* the first time, because the file isn't signed: choose *More info → Run anyway*.
+
+The first double-click starts Notes in the background and opens its window; later double-clicks just open the window. Settings and the search index are kept in a `Notes-data` folder next to the exe, so moving the folder moves everything (if that folder can't be written, the normal per-user folders are used). The notes themselves live wherever you choose during setup. To stop Notes, run `Notes.exe stop` (or sign out). It doesn't start at login by itself: for that, put a shortcut to it in `shell:startup` with the argument `--no-window`.
+
+Use either the installer or the portable exe on one PC, not both: both use port 4747.
+
 ### macOS / Linux
 
 ```sh
@@ -143,8 +151,11 @@ npm run typecheck
 npm test                   # unit + sync scenarios with real git in temp repos
 npm run test:ui            # end-to-end in headless Chrome; screenshots in tests/ui/screenshots
 npm run package            # release/*.zip and *.tar.gz with the installers
+npm run exe                # release/Notes.exe (on Windows) or release/notes: portable single executable
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the tests on Linux, Windows and macOS with Node 22 and 24, the browser tests, and a real install/uninstall on each OS. Pushing a tag like `v0.2.0` publishes a release with the installers (`release.yml`).
+`npm run exe` uses Node's [single executable applications](https://nodejs.org/api/single-executable-applications.html) feature: it bundles the server as CommonJS, embeds `dist/web/` as assets, injects both into a copy of the running `node` binary with `postject`, sets the icon and version with `rcedit`, and marks the exe as a windowed app so no console opens (`--console` keeps one, for debugging). A Windows exe has to be built on Windows; CI does that, runs it through setup → new note → sync, and attaches it to releases.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests on Linux, Windows and macOS with Node 22 and 24, the browser tests, and a real install/uninstall on each OS. Pushing a tag like `v0.4.0` publishes a release with the installers and the portable Windows exe (`release.yml`).
 
 The design, decisions and remaining work are in [HANDOVER.md](HANDOVER.md). The HTTP API and the sync protocol for non-git clients are in [docs/API.md](docs/API.md).

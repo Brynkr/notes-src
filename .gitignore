@@ -4,3 +4,4 @@ dist/
 .tmp/
 tests/ui/screenshots/
 release/
+dist-sea/

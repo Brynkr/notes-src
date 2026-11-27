@@ -24,3 +24,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" release/*.zip release/*.tar.gz --title "Notes $GITHUB_REF_NAME" --generate-notes
+
+  windows-exe:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run exe
+      - name: Attach Notes.exe to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "Notes-$env:GITHUB_REF_NAME-windows-x64.exe"
+          Copy-Item release\Notes.exe $name
+          gh release upload $env:GITHUB_REF_NAME $name --clobber

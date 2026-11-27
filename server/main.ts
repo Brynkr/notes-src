@@ -1,7 +1,7 @@
 // Entry point: CLI, settings, the HTTP server, and the notes runtime it serves.
 
 import "./quiet.ts";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -26,6 +26,7 @@ import {
 } from "./config.ts";
 import { createApp, type SettingsHandlers } from "./http.ts";
 import { NotesRuntime } from "./runtime.ts";
+import { isSea, seaAsset } from "./sea.ts";
 import {
   defaultRepoPath,
   getRemoteUrl,
@@ -42,8 +43,32 @@ import {
   validateSeconds,
 } from "./settings.ts";
 
+const SEA = isSea();
+
+/**
+ * The portable exe keeps its settings and search index in a "Notes-data"
+ * folder next to itself (if it can write there), so it can live on a USB
+ * stick. Otherwise it uses the normal per-user folders.
+ */
+function usePortableDirs(): void {
+  const base = path.join(path.dirname(process.execPath), "Notes-data");
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    const probeFile = path.join(base, ".write-test");
+    fs.writeFileSync(probeFile, "");
+    fs.rmSync(probeFile);
+  } catch {
+    return; // read-only location (e.g. Program Files)
+  }
+  process.env.NOTES_APP_CONFIG_DIR ??= path.join(base, "settings");
+  process.env.NOTES_APP_DATA_DIR ??= path.join(base, "data");
+}
+
 async function main(): Promise<void> {
+  if (SEA) usePortableDirs();
   const cli = parseArgs(process.argv.slice(2));
+  // Double-clicking the exe: start in the background if needed, open the window.
+  if (SEA && cli.defaulted) cli.command = "launch";
   if (cli.command === "help") return void process.stdout.write(HELP);
   if (cli.command === "version") return void console.log(VERSION);
 
@@ -272,7 +297,9 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     host: cfg.host,
     passwordHash: () => cfg.passwordHash,
     allowedHosts: () => cfg.allowedHosts,
-    webDir: path.join(path.dirname(fileURLToPath(import.meta.url)), "web"),
+    webDir: SEA ? path.join(path.dirname(process.execPath), "web") : path.join(path.dirname(fileURLToPath(import.meta.url)), "web"),
+    // Inside the exe, the web UI's files are embedded assets.
+    readStatic: SEA ? (rel) => seaAsset(`web/${rel}`) : undefined,
     shutdown: () => void stop(),
   });
 
@@ -380,9 +407,10 @@ async function launch(cli: Cli, fileCfg: Partial<Config>): Promise<void> {
       /* no log yet */
     }
     const log = fs.openSync(logFile, "a");
-    const script = fileURLToPath(import.meta.url);
     const args = process.argv.slice(2).filter((a) => a !== "launch" && a !== "--no-window");
-    const child = spawn(process.execPath, [script, ...args], { detached: true, stdio: ["ignore", log, log], windowsHide: true });
+    // The exe runs itself with "serve"; a plain install runs node with this script.
+    const childArgs = SEA ? ["serve", ...args] : [fileURLToPath(import.meta.url), ...args];
+    const child = spawn(process.execPath, childArgs, { detached: true, stdio: ["ignore", log, log], windowsHide: true });
     child.unref();
     let up = false;
     for (let i = 0; i < 50 && !up; i++) {
@@ -476,5 +504,26 @@ function promptHidden(questions: string[]): Promise<(string | undefined)[]> {
 
 main().catch((err: Error) => {
   console.error(`notes-app: ${err.message}`);
+  // The Windows exe has no console window, so show the problem in a message box.
+  if (SEA && process.platform === "win32") showErrorBox(err.message);
   process.exit(1);
 });
+
+function showErrorBox(message: string): void {
+  const quoted = `'${message.replace(/'/g, "''")}'`;
+  try {
+    spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        `Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(${quoted}, 'Notes', 'OK', 'Error') | Out-Null`,
+      ],
+      { windowsHide: true, timeout: 10 * 60_000 },
+    );
+  } catch {
+    /* nothing else we can do */
+  }
+}
