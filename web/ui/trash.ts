@@ -42,6 +42,8 @@ export class TrashDialog {
   async show(): Promise<void> {
     this.el.hidden = false;
     this.openPreview = null;
+    this.emptyBtn.hidden = true;
+    this.list.replaceChildren(h("p", { class: "muted" }, "Loading…"));
     await this.reload();
     this.el.querySelector<HTMLElement>(".dialog-head .icon-btn")?.focus();
   }

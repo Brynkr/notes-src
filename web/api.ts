@@ -10,6 +10,7 @@ import type {
   SaveResponse,
   SearchHit,
   ServerEvent,
+  HistoryEntry,
   SettingsDto,
   SettingsPatch,
   SettingsResult,
@@ -63,6 +64,8 @@ export const api = {
   create: (title: string) => call<NoteContent>("POST", "/api/notes", { title }),
   /** Moves the note to the Trash. */
   remove: (path: string) => call<{ ok: true; trashPath: string }>("DELETE", `/api/note?path=${q(path)}`),
+  history: (path: string) => call<HistoryEntry[]>("GET", `/api/history?path=${q(path)}`),
+  historyVersion: (commit: string, file: string) => call<{ text: string }>("GET", `/api/history/version?commit=${q(commit)}&file=${q(file)}`),
   trash: () => call<TrashItem[]>("GET", "/api/trash"),
   readTrash: (path: string) => call<{ path: string; text: string }>("GET", `/api/trash/note?path=${q(path)}`),
   restoreTrash: (path: string) => call<{ path: string }>("POST", "/api/trash/restore", { path }),

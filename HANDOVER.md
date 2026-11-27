@@ -1,6 +1,6 @@
 # Handover: Git-backed Markdown Notes App
 
-Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 27 November 2026 (M0–M7 built, plus wiki links, settings, installers and Tailscale access; see **Section 17**).
+Purpose of this document: give an AI coding assistant (or a human) everything needed to start building this project without re-deriving the design. Last updated 27 November 2026 (M0–M7 built, plus wiki links, settings, installers, Tailscale access, Trash, history and offline; see **Section 17**).
 
 ## 1. How to use this document
 
@@ -65,7 +65,7 @@ Use whatever the machine already has: SSH keys or a credential helper, configure
 - **Stable filenames:** `YYYYMMDD-HHMMSS-slug.md`, generated at creation. The filename never changes when the title changes, which keeps history and merges clean.
 - **Title** is derived from the first Markdown H1, falling back to the first non-empty line, falling back to the filename.
 - **Optional YAML front matter** for metadata that should travel with the note: `tags`, `created`. Do not require it. Preserve any front matter byte-for-byte when saving.
-- Deleting a note is `git rm` plus a commit (so deletions sync).
+- Deleting a note moves it to `.trash/` in the notes folder; the auto-commit syncs that move, so the Trash is the same on every device. "Delete forever" removes it from `.trash/` (it stays in git history). (Changed 27 Nov 2026; was `git rm`.)
 
 ### 4.4 What lives where
 
@@ -320,7 +320,8 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 | M6 split screen | Done, all five presets, restore on reload. Draggable dividers not built |
 | M7 polish | Done: settings screen, fuzzy quick switcher (Ctrl/Cmd+P), shortcuts, phone layout, dark mode, installers for Windows/macOS/Linux/Pi |
 | Later: wiki links + backlinks | Done (27 Nov) |
-| Later: tags UI, Markdown preview, per-note history, draggable dividers | Not built |
+| Later: per-note history | Done (27 Nov): history dialog with diff and restore |
+| Later: tags UI, Markdown preview, draggable dividers | Not built |
 
 ## 13. Testing
 
@@ -406,11 +407,22 @@ Other tests: filename generation, title extraction, front matter round-trip (byt
 - Pi: `install.sh --server` sets a password, listens on the LAN, makes an SSH key for a GitHub deploy key, enables linger; `--tailscale` runs `tailscale serve --bg 4747` and adds the ts.net name to `allowedHosts` (password still required).
 - Local tools stop the server with a per-start token in `<dataDir>/control-<port>.token` (mode 600), accepted only from loopback.
 
+**27 Nov 2026 (third batch): Trash, history, offline, guards, small wins.**
+
+- **Trash** (`NoteStore.trash/restore/purge/emptyTrash`, `.trash/` inside the notes root, hidden from the list and watcher). The pane's bin button moves notes to the Trash in one click with Undo; the Trash dialog previews/restores/deletes forever.
+- **Merge safety net:** git 2.43's default (ort) merge follows renames even with `-X no-renames`, so an edit made on B while A trashed the note would land in `.trash/`. After every merge, `SyncEngine.keepEditedNotes` restores any path modified on either side since the merge base but missing from the result, and commits that. Tests 5b/5c.
+- **History:** `NotesRuntime.history/version` (`git log --follow`, `cat-file`), history dialog with a line diff (`shared/diff.ts`) and restore as an undoable editor change. Empty when sync is off (no commits).
+- **Offline:** `web/static/sw.js` (network-first, 4 s timeout, caches the shell and GET info/notes/note/status/backlinks). The app warms the cache with every note's latest version. Unsaved text is stashed in localStorage, preferred when a note is opened, and saved when the server is reachable. On unload the stash is written synchronously and the "leave page?" prompt only appears if that fails. Service workers need https or localhost.
+- **Guards:** notes over 2 MB are refused (413); files over 5 MB are unstaged before every commit and reported in `status.skipped`; 5 wrong passwords per address then 30 s lockout doubling to 15 min (429, `X-Forwarded-For` behind `tailscale serve`).
+- **Small:** `.gitattributes` (`eol=lf`) for repos the app creates; Markdown stripped from search snippets; Alt+D today's note (`YYYY-MM-DD` title); GFM task checkboxes toggle on click (`web/editor/tasks.ts`); conflict copies get a strip with "Open original" and "Done, move copy to Trash"; banner chips say "Title (from machine)"; Escape closes any dialog.
+
+**Repos:** the owner's notes live in `Brynkr/notes` (private, empty at the start; never put source code there). This source lives in `Brynkr/notes-src`.
+
 **Not verified yet (no Windows/macOS/Pi here):** the PowerShell installer, macOS LaunchAgent/app bundle, the private Node download, Tailscale serve, and Git Credential Manager sign-in. The CI workflow runs the installers on real Windows/macOS/Linux runners; check its results after the first push.
 
 **Next steps (suggested order)**
 
 1. Push to GitHub, check CI, tag `v0.2.0` for a release; install on the Windows PC and the Pi.
 2. KindleHub client (Lua, `docs/API.md`), once the KindleHub repo and device details are available.
-3. Tags UI, Markdown preview, per-note history from `git log`, draggable dividers.
+3. Tags UI, Markdown preview, draggable dividers. Optional: auto-empty Trash after N days.
 4. Optional: rewrite `[[links]]` when a title changes (open question 11).

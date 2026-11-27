@@ -53,6 +53,16 @@ export interface SearchHit {
   snippet: string;
 }
 
+export interface HistoryEntry {
+  commit: string;
+  timeMs: number;
+  /** Machine that made the change (from the auto-commit message), if known. */
+  machine: string | null;
+  message: string;
+  /** Repo-relative path of the note in that commit (it may have been in the Trash). */
+  file: string;
+}
+
 export interface TrashItem {
   /** Path inside the Trash; it's the note's original path (plus "-2" etc. if needed). */
   path: string;

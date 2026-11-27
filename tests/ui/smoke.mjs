@@ -76,6 +76,7 @@ try {
   await page.setViewport({ width: 1280, height: 800 });
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("response", (r) => r.status() === 404 && errors.push(`404 ${r.url()}`));
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "domcontentloaded" });
 
   await step("opens the most recent note and shows sync state", async () => {
@@ -204,16 +205,24 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".pane").length === 1 && document.querySelector(".pane-grid").dataset.layout === "1");
   });
 
-  await step("delete needs two clicks and removes the file", async () => {
+  await step("delete moves the note to the Trash; Undo brings it back", async () => {
     await page.$$eval(".toast", (els) => els.forEach((e) => e.remove()));
-    const before = files().length;
-    await page.click(".pane-delete");
-    await page.waitForSelector(".pane-delete.armed");
-    await page.click(".pane-delete");
-    await waitFor(() => files().length === before - 1, "file deleted");
-    await sleep(500);
+    const before = files();
+    const victim = await page.$eval(".pane.active .pane-title", (e) => e.title);
+    await page.click(".pane.active .pane-delete");
+    await waitFor(() => files().length === before.length - 1, "file moved");
+    assert.ok(fs.existsSync(path.join(desk, ".trash", victim)), "in .trash");
+    await sleep(400);
     const toasts = await page.$$eval(".toast-msg", (els) => els.map((e) => e.textContent));
+    assert.ok(toasts.some((t) => t.includes("to the Trash")), "toast: " + toasts);
     assert.ok(!toasts.some((t) => t.includes("another device")), "own delete not reported as remote: " + toasts);
+    await page.click(".toast-action");
+    await waitFor(() => files().includes(victim), "restored by Undo");
+    assert.equal(fs.existsSync(path.join(desk, ".trash", victim)), false);
+    await waitFor(async () => (await page.$eval(".pane.active .pane-title", (e) => e.title)) === victim, "reopened");
+    // Delete it again and leave it in the Trash for the next steps.
+    await page.click(".pane.active .pane-delete");
+    await waitFor(() => !files().includes(victim), "moved again");
   });
 
   await step("narrow (phone) layout", async () => {

@@ -4,7 +4,9 @@ Plain Markdown notes in a git repo, synced through GitHub. The same small app ru
 
 - Notes are ordinary `.md` files. Any editor can read them, and there's no lock-in.
 - Sync is automatic: commit, fetch, merge, push in the background. It never rebases, never leaves conflict markers in a note, and never throws away text. If the same lines changed in two places, you get both versions side by side.
-- Quick switcher (Ctrl/⌘+P), full-text search, `[[wiki links]]` with backlinks, and split screen up to four panes. Works offline.
+- Quick switcher (Ctrl/⌘+P), full-text search, `[[wiki links]]` with backlinks, today's note, clickable checklists, and split screen up to four panes.
+- Deleted notes go to a Trash you can restore from, and every note has a version history (from git) you can browse and restore.
+- Works offline, including on your phone through the Pi.
 
 ![Editor](docs/screenshot.png)
 
@@ -78,11 +80,15 @@ Don't forward port 4747 on your router, and don't use `tailscale funnel` (that p
 | --- | --- |
 | Go to a note (fuzzy) | **Ctrl/⌘+P**. Type part of a title; Enter opens, Ctrl/⌘+Enter opens to the side, Shift+Enter creates a note with that title |
 | New note | **Alt+N**, or **+** in the sidebar |
+| Today's note | **Alt+D**, or the calendar button: opens (or creates) a note titled with today's date |
+| Checklists | `- [ ] item` shows a checkbox; click or tap it to tick |
 | Search inside notes | **Ctrl/⌘+K** |
 | Link to a note | type `[[` and pick a title. `[[Title|shown text]]` and `[[Title#Heading]]` work too |
 | Follow a link | **Ctrl/⌘+click** it (or **Alt+Enter** with the cursor on it). A link to a note that doesn't exist yet (dashed) creates it |
 | Backlinks | "Linked from N notes" under each note |
 | Split screen | **Ctrl/⌘+\\**, Ctrl/⌘+click a note, or the layout buttons at the bottom right. **Alt+1…4** focuses a pane, **Alt+W** closes it |
+| Delete / Trash | the bin button on a note moves it to the **Trash** (Undo in the message that pops up). The bin button in the sidebar opens the Trash: preview, restore, or delete forever. The Trash syncs to all your devices |
+| History | the clock button on a note: every synced version, with what restoring it would change. Restoring is an ordinary edit (Ctrl/⌘+Z undoes it) |
 | Settings | **Ctrl/⌘+,** or the gear at the bottom right |
 | Save / sync now | **Ctrl/⌘+S** / the ↻ button (both happen automatically) |
 
@@ -90,7 +96,13 @@ Notes save as you type and sync about 8 seconds after you stop typing, every 3 m
 
 Links point at a note's **title** (its first `# Heading`). Renaming a title doesn't update links to it; the old ones show as dashed (missing) until you fix them.
 
-**Conflicts:** if a note was changed in two places, the version you were editing stays in the note and the other one is saved next to it as `name (conflict 2026-11-27 laptop).md`. A banner lists these. Click one to open it beside the original, copy across what you want, then delete the copy.
+**Conflicts:** if a note was changed in two places, the version you were editing stays in the note and the other one is saved next to it as `name (conflict 2026-11-27 laptop).md`. A banner lists these. Click one to open it beside the original, copy across what you want, then press **Done, move copy to Trash**.
+
+**Offline:** on the desktop, and on a phone using the Pi's `https://…ts.net` address, the app keeps working without a connection. It opens, shows your notes (it keeps a copy of each), and keeps what you type until it can save. Over plain `http://` on the home network, browsers don't allow this, so use the Tailscale address on your phone.
+
+**Size limits:** a single note can be up to 2 MB. Files over 5 MB in the notes folder (videos, archives…) are never synced, so they can't bloat the repository; the status bar lists any it skipped.
+
+**Passwords:** after 5 wrong passwords from one device, that device has to wait 30 seconds, doubling with each further miss (up to 15 minutes).
 
 ## Settings
 

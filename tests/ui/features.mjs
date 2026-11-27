@@ -189,7 +189,7 @@ try {
     const nameInput = await inputs[machine].$("input");
     await nameInput.evaluate((e) => (e.value = ""));
     await nameInput.type("study-pc");
-    await page.click(".dialog-foot .btn-primary");
+    await page.click(".dialog-backdrop:not([hidden]) .dialog-foot .btn-primary");
     // Settings that change the runtime reload the page.
     await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => undefined);
     await page.waitForSelector(".machine");
@@ -206,7 +206,7 @@ try {
     const urlInput = await field.$("input");
     await urlInput.evaluate((e) => (e.value = ""));
     await urlInput.type("ext::sh -c reboot");
-    await page.click(".dialog-foot .btn-primary");
+    await page.click(".dialog-backdrop:not([hidden]) .dialog-foot .btn-primary");
     await waitFor(async () => (await page.$eval(".dialog-status", (e) => e.className)).includes("bad"), "error shown");
     assert.equal(git(notesDir, "config", "--get", "remote.origin.url").trim(), remote);
     await page.keyboard.press("Escape");
@@ -221,6 +221,84 @@ try {
     await page.click(".sync .icon-btn");
     await waitFor(() => /study-pc/.test(git(remote, "log", "-1", "--format=%s", "main")), "pushed under new name");
     assert.match(git(remote, "ls-tree", "--name-only", "main"), /garden-plans/);
+  });
+
+  await step("today's note (Alt+D) with a clickable checkbox", async () => {
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    await combo(["Alt"], "KeyD");
+    await waitFor(async () => (await activeTitle()) === today, "daily note");
+    await page.keyboard.type("- [ ] buy milk");
+    const file = await waitFor(() => files().find((f) => f.endsWith(`-${today}.md`) && read(f).includes("- [ ] buy milk")), "saved");
+    await page.waitForSelector(".pane.active .cm-task-box");
+    await page.click(".pane.active .cm-task-box");
+    await waitFor(() => read(file).includes("- [x] buy milk"), "ticked on disk");
+    assert.equal(await page.$eval(".pane.active .cm-task-box", (e) => e.checked), true);
+    await combo(["Alt"], "KeyD");
+    await sleep(300);
+    assert.equal(files().filter((f) => f.endsWith(`-${today}.md`)).length, 1, "Alt+D again reuses today's note");
+    await shot("15-checkboxes");
+  });
+
+  await step("history shows earlier versions and restores one (undoable)", async () => {
+    await combo(["Control"], "KeyP");
+    await page.type(".switcher-input", "Weekly review");
+    await page.keyboard.press("Enter");
+    await waitFor(async () => (await activeTitle()) === "Weekly review", "open note");
+    await page.click('.pane.active [aria-label="History"]');
+    await page.waitForSelector(".dialog-backdrop:not([hidden]) .history-row");
+    const rows = await page.$$(".history-row");
+    assert.ok(rows.length >= 2, `versions: ${rows.length}`);
+    await page.$$eval(".history-row", (els) => els[els.length - 1].click());
+    await page.waitForSelector(".diff .diff-del");
+    await shot("16-history");
+    await page.click(".dialog-backdrop:not([hidden]) .dialog-foot .btn-primary");
+    await waitFor(async () => !(await activeText()).includes("after renaming"), "restored in editor");
+    const file = files().find((f) => f.endsWith("weekly-review.md"));
+    await waitFor(() => !read(file).includes("after renaming"), "restored on disk");
+    await combo(["Control"], "KeyZ");
+    await waitFor(async () => (await activeText()).includes("after renaming"), "undo brings it back");
+  });
+
+  await step("Trash dialog: preview, restore, delete forever", async () => {
+    await combo(["Alt"], "KeyD");
+    await sleep(300);
+    const victim = files().find((f) => /-\d{4}-\d{2}-\d{2}\.md$/.test(f));
+    await page.click(".pane.active .pane-delete");
+    await waitFor(() => !files().includes(victim), "moved to Trash");
+    await page.click('.sidebar [aria-label="Trash"]');
+    await page.waitForSelector(".dialog-backdrop:not([hidden]) .trash-row");
+    await page.click(".trash-row .trash-title");
+    await waitFor(async () => (await page.$eval(".trash-preview:not([hidden])", (e) => e.textContent)).includes("buy milk"), "preview");
+    await shot("17-trash");
+    await page.click(".trash-row .trash-actions .btn");
+    await waitFor(() => files().includes(victim), "restored");
+    await page.waitForSelector(".pane.active .pane-delete:not([hidden])");
+    await page.waitForSelector(".pane.active .cm-content");
+    await page.click(".pane.active .pane-delete");
+    await waitFor(() => !files().includes(victim), "moved again");
+    await page.click('.sidebar [aria-label="Trash"]');
+    await page.waitForSelector(".dialog-backdrop:not([hidden]) .trash-row");
+    const forever = (await page.$$(".trash-row .trash-actions .btn"))[1];
+    await forever.click();
+    await forever.click();
+    await waitFor(() => !fs.existsSync(path.join(notesDir, ".trash", victim)), "deleted forever");
+    await page.keyboard.press("Escape");
+  });
+
+  await step("conflict copy: banner names it; 'Done' moves the copy to the Trash", async () => {
+    const original = files().find((f) => f.endsWith("garden-plans.md"));
+    const copy = original.replace(/\.md$/, " (conflict 2026-11-27 laptop).md");
+    fs.writeFileSync(path.join(notesDir, copy), "# Garden plans\n\nThe laptop's version.\n");
+    await page.waitForSelector(".banner:not([hidden]) .chip");
+    assert.match(await page.$eval(".banner .chip", (e) => e.textContent), /Garden plans \(from laptop\)/);
+    await page.click(".banner .chip");
+    await page.waitForSelector(".pane .conflict-strip:not([hidden])");
+    await shot("18-conflict-strip");
+    await page.click(".conflict-strip .btn-primary");
+    await waitFor(() => !files().includes(copy), "copy moved");
+    assert.ok(fs.existsSync(path.join(notesDir, ".trash", copy)));
+    await page.waitForSelector(".banner[hidden]");
   });
 
   // The setup refusal above is an expected 400.

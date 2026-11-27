@@ -19,7 +19,8 @@ Raspberry Pi (web UI + API) ──────git───┘
 - **Mutating requests** (`POST`, `PUT`, `DELETE`) must send the header `X-Notes-App: 1`. Bodies are JSON (`Content-Type: application/json`).
 - **Paths** are relative to the notes folder, use `/`, end in `.md`, and can't contain `..` or hidden segments. URL-encode them in query strings.
 - **Hashes** are lowercase hex SHA-256 of the file's exact bytes. They identify a version of a note.
-- Errors: JSON `{ "error": "message" }` with status `400` (bad input), `401` (password), `403` (missing header), `404` (no such note), `409` (changed since you saw it), `5xx`.
+- Errors: JSON `{ "error": "message" }` with status `400` (bad input), `401` (password), `403` (missing header), `404` (no such note), `409` (changed since you saw it), `413` (note over 2 MB), `429` (too many wrong passwords; see `Retry-After`), `5xx`.
+- **Trash:** deleting a note moves it to `.trash/` inside the notes folder, which syncs like everything else, so a client should treat a note that disappeared from `/api/notes` as deleted.
 
 ## Endpoints
 
@@ -31,8 +32,15 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `GET /api/note?path=P` | | `{ path, text, hash }` |
 | `PUT /api/note` | `{ path, text, baseHash }` | `{ hash, conflictCopy? }` |
 | `POST /api/notes` | `{ title }` | `{ path, text, hash }` (server picks the filename) |
-| `DELETE /api/note?path=P[&hash=H]` | | `{ ok: true }`, or `409` if `hash` given and the note changed |
-| `GET /api/search?q=Q` | | `[{ path, title, snippet }]`; matches in `snippet` are wrapped in `\u0001`…`\u0002` |
+| `DELETE /api/note?path=P[&hash=H]` | | moves the note to the Trash: `{ ok: true, trashPath }`, or `409` if `hash` given and the note changed |
+| `GET /api/trash` | | `[{ path, title, deletedMs, size }]`, most recently deleted first |
+| `GET /api/trash/note?path=P` | | `{ path, text }` of a note in the Trash |
+| `POST /api/trash/restore` | `{ path }` | `{ path }`: where it was restored (a "(restored)" name if the old one is taken) |
+| `DELETE /api/trash?path=P` | | delete one note from the Trash for good |
+| `POST /api/trash/empty` | `{}` | `{ count }` |
+| `GET /api/history?path=P` | | `[{ commit, timeMs, machine, message, file }]`: synced versions, newest first |
+| `GET /api/history/version?commit=C&file=F` | | `{ text }` of that version (`file` as returned by history) |
+| `GET /api/search?q=Q` | | `[{ path, title, snippet }]`; `snippet` is plain text (Markdown stripped) with matches wrapped in `\u0001`…`\u0002` |
 | `GET /api/backlinks?path=P` | | `[{ path, title, context }]`: notes that `[[link]]` to P, with the linking line |
 | `POST /api/sync` | `{}` | runs a git sync now (waits for it), returns sync status |
 | `GET /api/events` | | Server-Sent Events stream (see below) |
@@ -50,7 +58,8 @@ Sync status:
 
 ```json
 { "state": "synced", "lastSyncMs": 1795700000000, "lastAttemptMs": 1795700000000,
-  "message": null, "conflicts": ["x (conflict 2026-11-27 laptop).md"], "ahead": 0 }
+  "message": null, "conflicts": ["x (conflict 2026-11-27 laptop).md"], "ahead": 0,
+  "skipped": [{ "path": "video.mp4", "size": 52428800 }] }
 ```
 
 `state` is one of `synced`, `syncing`, `offline`, `conflict`, `error`, `local` (no git remote) or `disabled`.
@@ -86,7 +95,7 @@ Run this when the device gets wifi, and when a note is opened while online:
 
 1. `POST /api/sync`: the Pi pulls the latest from GitHub first (optional but recommended; takes a second or two).
 2. **Push local edits.** For each dirty note: `PUT /api/note { path, text, baseHash }`. Set `baseHash` to the returned `hash` and clear `dirty`. If `conflictCopy` came back, the other version now exists on the server and arrives in step 4.
-3. **Push local deletions.** `DELETE /api/note?path=P&hash=baseHash`. `404` means it's already gone, which is fine. `409` means it was edited elsewhere: keep the note and fetch it in step 4.
+3. **Push local deletions.** `DELETE /api/note?path=P&hash=baseHash` (it goes to the Trash, so it can be restored from any device). `404` means it's already gone, which is fine. `409` means it was edited elsewhere: keep the note and fetch it in step 4.
 4. **Pull.** `GET /api/notes`. For every server note whose `hash` differs from the local `baseHash` (or that isn't local yet): `GET /api/note?path=…`, store `text`, and set `baseHash = hash`. A note that's local and clean but missing from the server list was deleted elsewhere: remove it locally.
 5. Optionally `POST /api/sync` again so the Pi pushes to GitHub right away. Otherwise it does that within about 8 seconds on its own.
 

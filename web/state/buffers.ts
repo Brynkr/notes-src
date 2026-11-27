@@ -93,6 +93,14 @@ export class BufferStore {
       .read(path)
       .then((note) => {
         const b = new NoteBuffer(path, note.text, note.hash);
+        // Text typed earlier that never reached the server (offline, crash)
+        // wins over the copy we just got, and is saved as soon as possible.
+        const stashed = this.stashed().find((e) => e.path === path);
+        if (stashed && stashed.text !== note.text.replace(/\r\n?/g, "\n")) {
+          b.doc = Text.of(stashed.text.split(/\r\n?|\n/));
+          b.diskHash = stashed.baseHash;
+          this.scheduleSave(b, 1000);
+        }
         this.buffers.set(path, b);
         return b;
       })
@@ -168,6 +176,7 @@ export class BufferStore {
         const res = await api.save({ path: b.path, text: sending.toString(), baseHash: b.diskHash });
         b.diskHash = res.hash;
         b.savedDoc = sending;
+        if (!b.dirty) this.unstash(b.path);
         b.deleted = false;
         b.retryMs = 0;
         b.lastError = null;
@@ -255,20 +264,58 @@ export class BufferStore {
 
   private stashTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private stashed(): { path: string; text: string; baseHash: string | null }[] {
+    try {
+      return JSON.parse(localStorage.getItem(STASH_KEY) ?? "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  /** The server has this note's latest text: drop any stashed copy right away. */
+  private unstash(path: string): void {
+    const rest = this.stashed().filter((e) => e.path !== path);
+    try {
+      if (rest.length) localStorage.setItem(STASH_KEY, JSON.stringify(rest));
+      else localStorage.removeItem(STASH_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Write the stash now. Returns false if unsaved text could not be stored. */
+  stashNow(): boolean {
+    if (this.stashTimer) clearTimeout(this.stashTimer);
+    this.stashTimer = null;
+    return this.writeStash();
+  }
+
   private stash(): void {
     if (this.stashTimer) return;
     this.stashTimer = setTimeout(() => {
       this.stashTimer = null;
-      const unsaved = this.all()
-        .filter((b) => b.dirty)
-        .map((b) => ({ path: b.path, text: b.doc.toString(), baseHash: b.diskHash }));
+      this.writeStash();
+    }, 300);
+  }
+
+  private writeStash(): boolean {
+    {
+      const open = new Set(this.all().map((b) => b.path));
+      const unsaved = [
+        ...this.all()
+          .filter((b) => b.dirty)
+          .map((b) => ({ path: b.path, text: b.doc.toString(), baseHash: b.diskHash })),
+        // Keep stashed notes that aren't open right now (e.g. waiting since an offline reload).
+        ...this.stashed().filter((e) => !open.has(e.path)),
+      ];
       try {
         if (unsaved.length) localStorage.setItem(STASH_KEY, JSON.stringify(unsaved));
         else localStorage.removeItem(STASH_KEY);
+        return true;
       } catch {
-        /* storage full or unavailable */
+        return false; // storage full or unavailable
       }
-    }, 300);
+    }
   }
 
   /** On startup: push any text that never reached the server. Returns how many were recovered. */

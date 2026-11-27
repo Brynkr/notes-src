@@ -7,7 +7,7 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import type { HistoryEntry, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 import { dataDir, type Config } from "./config.ts";
 import { Git, Queue } from "./git.ts";
 import { NoteStore } from "./notes.ts";
@@ -148,6 +148,41 @@ export class NotesRuntime extends EventEmitter<RuntimeEvents> {
       ahead: s.ahead,
       skipped: s.skipped,
     };
+  }
+
+  private repoRel(notePath: string): string {
+    this.store.resolve(notePath); // validates
+    const prefix = path.relative(this.repoRoot, this.notesRoot).split(path.sep).join("/");
+    return prefix ? `${prefix}/${notePath}` : notePath;
+  }
+
+  /** Versions of a note recorded by sync commits, newest first (follows moves to/from the Trash). */
+  async history(notePath: string, limit = 100): Promise<HistoryEntry[]> {
+    const file = this.repoRel(notePath);
+    const r = await this.git.run(
+      ["log", "--follow", `-n${limit}`, "-z", "--name-only", "--format=%x1e%H%x1f%at%x1f%s", "--", file],
+      { allowFail: true },
+    );
+    if (r.code !== 0) return []; // no commits yet
+    const out: HistoryEntry[] = [];
+    for (const rec of r.stdout.split("\x1e").filter((x) => x.trim())) {
+      // "-z" ends the header with NUL (or newline, depending on git version); then the file name.
+      const parts = rec.split(/[\0\n]/).map((x) => x.trim()).filter(Boolean);
+      const [commit, at, message] = (parts[0] ?? "").split("\x1f");
+      const name = parts[1] ?? file;
+      const m = /^auto: \S+ (.+?)(?: \(kept .*\))?$/.exec(message);
+      out.push({ commit, timeMs: Number(at) * 1000, machine: m ? m[1] : null, message, file: name });
+    }
+    return out;
+  }
+
+  /** A note's text at a given commit. */
+  async version(commit: string, file: string): Promise<string> {
+    if (!/^[0-9a-f]{7,64}$/.test(commit)) throw new Error("Bad commit id");
+    if (!/\.(md|markdown)$/i.test(file) || file.split("/").some((s) => s === ".." || s === "") || file.includes("\0")) throw new Error("Bad path");
+    const r = await this.git.run(["cat-file", "blob", `${commit}:${file}`], { binary: true, allowFail: true });
+    if (r.code !== 0) throw new Error("That version isn't available.");
+    return Buffer.from(r.stdout, "latin1").toString("utf8");
   }
 
   async syncNow(): Promise<SyncStatusDto> {

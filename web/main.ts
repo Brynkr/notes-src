@@ -2,7 +2,7 @@
 
 import type { NoteMeta, SyncStatusDto } from "../shared/types.ts";
 import { linkKey, resolveLink } from "../shared/links.ts";
-import { api, subscribe } from "./api.ts";
+import { api, ApiError, subscribe } from "./api.ts";
 import { BufferStore } from "./state/buffers.ts";
 import { Workspace } from "./state/workspace.ts";
 import { h, icons, isMac, toast } from "./ui/dom.ts";
@@ -11,6 +11,7 @@ import { Sidebar } from "./ui/sidebar.ts";
 import { ConflictBanner, originalOf, StatusBar } from "./ui/statusbar.ts";
 import { QuickSwitcher } from "./ui/switcher.ts";
 import { TrashDialog } from "./ui/trash.ts";
+import { HistoryDialog } from "./ui/history.ts";
 import { renderSetup, SettingsDialog } from "./ui/settings.ts";
 
 const workspace = new Workspace();
@@ -169,6 +170,7 @@ const grid = new PaneGrid({
   buffers,
   deleteNote,
   openNote,
+  showHistory: (target) => void historyDialog.show(target),
   links: {
     notes: () => notes,
     exists: (target) => linkKeys.has(linkKey(target)),
@@ -192,6 +194,8 @@ const switcher = new QuickSwitcher({
   create: (title, toSide) => void createNote(title, toSide),
   cancel: () => grid.focusActive(),
 });
+
+const historyDialog = new HistoryDialog({ onClosed: () => grid.focusActive() });
 
 const trashDialog = new TrashDialog({
   onRestored: (path) => void refreshNotes().then(() => openNote(path, false)),
@@ -220,7 +224,7 @@ statusbar.el.append(
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
 const main = h("main", { class: "main" }, banner.el, grid.el, statusbar.el);
-const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el);
+const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el, settingsDialog.el, trashDialog.el, historyDialog.el);
 
 function showNewNote(): void {
   setSidebarOpen(true);
@@ -288,6 +292,21 @@ window.addEventListener(
   "keydown",
   (e) => {
     const mod = isMac ? e.metaKey : e.ctrlKey;
+    if (e.key === "Escape") {
+      // Close whichever dialog is open, wherever the focus is.
+      for (const d of [historyDialog, trashDialog, settingsDialog]) {
+        if (d.isOpen) {
+          e.preventDefault();
+          d.close();
+          return;
+        }
+      }
+      if (switcher.isOpen) {
+        e.preventDefault();
+        switcher.close(true);
+        return;
+      }
+    }
     if (e.altKey && !mod && e.code === "KeyN") {
       e.preventDefault();
       showNewNote();
@@ -348,6 +367,7 @@ const connectEvents = () => subscribe(
         break;
       case "notes-changed":
         refreshNotesSoon();
+        setTimeout(() => void warmOfflineCache(), 3000);
         break;
       case "reconfigured":
         // Another folder or sync setup: save what's open, then start fresh.
@@ -392,10 +412,10 @@ buffers.on("changed", () => {
 
 window.addEventListener("focus", () => void api.focus().catch(() => undefined));
 window.addEventListener("beforeunload", (e) => {
-  if (buffers.hasUnsaved()) {
-    buffers.saveOnUnload();
-    e.preventDefault();
-  }
+  if (!buffers.hasUnsaved()) return;
+  buffers.saveOnUnload();
+  // Unsaved text is kept in this browser and saved next time; only warn if that failed.
+  if (!buffers.stashNow()) e.preventDefault();
 });
 window.addEventListener("pagehide", () => buffers.saveOnUnload());
 
@@ -406,8 +426,8 @@ async function boot(): Promise<void> {
   let info;
   try {
     info = await api.info();
-  } catch (err) {
-    placeholder.textContent = `Can't reach the notes server: ${(err as Error).message}`;
+  } catch {
+    placeholder.textContent = "Can't reach the notes server. If it's on this computer, start Notes again; otherwise check your connection.";
     return;
   }
   if (!info.configured) {
@@ -432,6 +452,58 @@ async function boot(): Promise<void> {
   grid.render();
   sidebar.setActivePath(workspace.active.notePath);
   if (!status) api.status().then(setStatus, () => undefined);
+  registerOffline();
+}
+
+// --- offline ---------------------------------------------------------------------
+
+const WARM_KEY = "notes-app:offline-warm:v1";
+
+/** Service worker (https/localhost only) + keep every note's latest version in its cache. */
+function registerOffline(): void {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  // On first install the worker takes control a moment after "ready".
+  navigator.serviceWorker.addEventListener("controllerchange", () => void warmOfflineCache());
+  navigator.serviceWorker.register("/sw.js").then(
+    () => void navigator.serviceWorker.ready.then(() => warmOfflineCache()),
+    () => undefined,
+  );
+}
+
+let warming = false;
+async function warmOfflineCache(): Promise<void> {
+  if (warming || !navigator.serviceWorker.controller) return;
+  warming = true;
+  try {
+    let warm: Record<string, string> = {};
+    try {
+      warm = JSON.parse(localStorage.getItem(WARM_KEY) ?? "{}");
+    } catch {
+      /* start over */
+    }
+    // App info and the list too, so the app can start with no server at all.
+    if (!(await api.info().then(() => true, () => false))) return;
+    await api.list().catch(() => undefined);
+    const next: Record<string, string> = {};
+    for (const n of notes.slice(0, 1000)) {
+      if (warm[n.path] !== n.hash) {
+        if (!notes.some((m) => m.path === n.path)) continue; // deleted meanwhile
+        // Fetching through the service worker stores it in the offline cache.
+        const err = await api.read(n.path).then(() => null, (e: unknown) => e as ApiError);
+        if (err && err.status === 404) continue;
+        if (err) return; // offline or server gone: try again next time
+        await new Promise((r) => setTimeout(r, 20)); // stay out of the way
+      }
+      next[n.path] = n.hash;
+    }
+    try {
+      localStorage.setItem(WARM_KEY, JSON.stringify(next));
+    } catch {
+      /* storage full */
+    }
+  } finally {
+    warming = false;
+  }
 }
 
 void boot();

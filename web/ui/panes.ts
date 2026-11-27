@@ -4,7 +4,8 @@ import { conflictInfo, originalOf } from "../../shared/conflicts.ts";
 import { extractTitle } from "../../shared/markdown.ts";
 import type { Backlink } from "../../shared/types.ts";
 import { api, ApiError } from "../api.ts";
-import { createEditor, type PaneEditor } from "../editor/cm.ts";
+import { createEditor, minimalChange, type PaneEditor } from "../editor/cm.ts";
+import type { HistoryTarget } from "./history.ts";
 import { refreshLinks, type LinkHost } from "../editor/wikilinks.ts";
 import type { BufferStore, NoteBuffer } from "../state/buffers.ts";
 import type { PaneState, Workspace } from "../state/workspace.ts";
@@ -20,6 +21,7 @@ export interface PaneDeps {
   extraKeys: (paneId: string) => { key: string; run: () => boolean }[];
   links: LinkHost;
   openNote: (path: string, toSide: boolean) => void;
+  showHistory: (target: HistoryTarget) => void;
 }
 
 const BACKLINKS_KEY = "notes-app:backlinks-open";
@@ -31,6 +33,7 @@ class Pane {
   private readonly dotEl: HTMLElement;
   private readonly body: HTMLElement;
   private readonly deleteBtn: HTMLButtonElement;
+  private readonly historyBtn: HTMLButtonElement;
   private readonly backlinksEl: HTMLElement;
   private readonly conflictEl: HTMLElement;
   private backlinkSeq = 0;
@@ -46,6 +49,13 @@ class Pane {
     this.deps = deps;
     this.titleEl = h("span", { class: "pane-title" });
     this.dotEl = h("span", { class: "dirty-dot", "aria-hidden": "true" });
+    this.historyBtn = h("button", {
+      class: "icon-btn",
+      title: "History",
+      "aria-label": "History",
+      html: icons.history,
+      onclick: () => this.openHistory(),
+    });
     this.deleteBtn = h("button", {
       class: "icon-btn pane-delete",
       title: "Move to Trash",
@@ -65,6 +75,7 @@ class Pane {
         this.titleEl,
         this.dotEl,
         h("span", { class: "spacer" }),
+        this.historyBtn,
         this.deleteBtn,
         h("button", {
           class: "icon-btn",
@@ -92,6 +103,23 @@ class Pane {
       this.body,
       this.backlinksEl,
     );
+  }
+
+  private openHistory(): void {
+    const editor = this.editor;
+    const path = this.notePath;
+    if (!editor || !path) return;
+    this.deps.showHistory({
+      path,
+      title: this.titleEl.textContent ?? path,
+      current: () => editor.view.state.doc.toString(),
+      // A normal, undoable edit: it saves and syncs like typing does.
+      restore: (text) => {
+        const change = minimalChange(editor.view.state.doc.toString(), text);
+        if (change) editor.view.dispatch({ changes: change, userEvent: "input.restore", scrollIntoView: true });
+        editor.view.focus();
+      },
+    });
   }
 
   /** For a conflict copy: say what it is, and offer "open original" / "done". */
@@ -243,6 +271,7 @@ class Pane {
     this.titleEl.textContent = "No note";
     this.dotEl.className = "dirty-dot";
     this.deleteBtn.hidden = true;
+    this.historyBtn.hidden = true;
     this.body.replaceChildren(
       h(
         "div",
@@ -261,6 +290,7 @@ class Pane {
       const b = this.buffer;
       if (!b) return;
       this.deleteBtn.hidden = false;
+      this.historyBtn.hidden = false;
       this.titleEl.textContent = extractTitle(b.doc.toString(), b.path);
       this.titleEl.title = b.path;
       const state = b.lastError ? "error" : b.saving ? "saving" : b.dirty ? "dirty" : "clean";

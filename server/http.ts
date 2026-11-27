@@ -19,6 +19,7 @@ import { keysForNote } from "../shared/links.ts";
 import type {
   AppInfo,
   Backlink,
+  HistoryEntry,
   RemoteTestResult,
   SaveRequest,
   ServerEvent,
@@ -41,6 +42,8 @@ export interface RuntimeLike {
   syncNow(): Promise<SyncStatusDto>;
   focus(): void;
   saved(paths: string[]): void;
+  history?(notePath: string): Promise<HistoryEntry[]>;
+  version?(commit: string, file: string): Promise<string>;
 }
 
 export interface SettingsHandlers {
@@ -264,6 +267,21 @@ export function createApp(ctx: AppContext) {
           .filter((b) => b.path !== p)
           .map((b) => ({ ...b, title: r.store.known.get(b.path)?.meta.title ?? b.path }));
         return send(res, 200, hits satisfies Backlink[]);
+      }
+      case "GET /api/history": {
+        const r = rt();
+        if (!r.history) throw new HttpError(404, "Not found");
+        return send(res, 200, await r.history(url.searchParams.get("path") ?? ""));
+      }
+      case "GET /api/history/version": {
+        const r = rt();
+        if (!r.version) throw new HttpError(404, "Not found");
+        try {
+          const text = await r.version(url.searchParams.get("commit") ?? "", url.searchParams.get("file") ?? "");
+          return send(res, 200, { text });
+        } catch (err) {
+          throw new HttpError(400, (err as Error).message);
+        }
       }
       case "POST /api/sync":
         return send(res, 200, await rt().syncNow());
