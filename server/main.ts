@@ -63,6 +63,7 @@ async function main(): Promise<void> {
   }
   if (cli.command === "launch") return launch(cli, fileCfg);
   if (cli.command === "has-password") process.exit(fileCfg.passwordHash ? 0 : 1);
+  if (cli.command === "running") process.exit((await probe(cli.overrides.port ?? fileCfg.port ?? defaults().port)) ? 0 : 1);
   if (cli.command === "configure") {
     saveConfigFile({ ...fileCfg, ...cli.overrides });
     return void console.log(`Saved settings to ${configFile()}`);

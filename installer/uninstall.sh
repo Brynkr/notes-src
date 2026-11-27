@@ -12,19 +12,30 @@ else
 fi
 WRAPPER="$HOME/.local/bin/notes-app"
 
-[ -x "$WRAPPER" ] && "$WRAPPER" stop >/dev/null 2>&1 && sleep 3
-
+# 1. Unregister the background service first, so nothing restarts the server.
 if [ "$OS" = "Darwin" ]; then
   AGENT="$HOME/Library/LaunchAgents/nz.notes-app.server.plist"
-  launchctl bootout "gui/$(id -u)" "$AGENT" >/dev/null 2>&1 || true
+  launchctl bootout "gui/$(id -u)/nz.notes-app.server" >/dev/null 2>&1 ||
+    launchctl bootout "gui/$(id -u)" "$AGENT" >/dev/null 2>&1 || true
   rm -f "$AGENT"
+elif command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now notes-app.service >/dev/null 2>&1 || true
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/notes-app.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
+
+# 2. Stop any copy still running (it syncs first), and wait until it has exited.
+if [ -x "$WRAPPER" ]; then
+  "$WRAPPER" stop >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    "$WRAPPER" running >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+fi
+
+if [ "$OS" = "Darwin" ]; then
   rm -rf "$HOME/Applications/Notes.app"
 else
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user disable --now notes-app.service >/dev/null 2>&1 || true
-    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/notes-app.service"
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-  fi
   rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/notes-app.desktop"
   rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/notes-app.desktop"
 fi

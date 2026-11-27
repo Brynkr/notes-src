@@ -29,6 +29,16 @@ describe("validation", () => {
     assert.throws(() => validateHosts(["bad host"]));
   });
 
+  test("default machine name always passes validation", async () => {
+    const { defaultMachineName } = await import("../../server/config.ts");
+    const { validateMachineName } = await import("../../server/settings.ts");
+    for (const host of ["sat12-bq165-b1a8ca41-a352-46a4-b7c6-a6e85b5920b9-1685F9428D1A", "Bryn's MacBook Air.local", "--weird--", "", "pi"]) {
+      const name = defaultMachineName(host);
+      assert.equal(validateMachineName(name), name, host);
+    }
+    assert.equal(defaultMachineName("Bryn's MacBook Air.local"), "Bryn-s MacBook Air");
+  });
+
   test("nonNoteFiles", async () => {
     const d = await tempDir("notes-nn-");
     fs.writeFileSync(path.join(d, "a.md"), "");

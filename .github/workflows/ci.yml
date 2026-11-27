@@ -106,6 +106,6 @@ jobs:
           ./install.sh -y
           ~/.local/bin/notes-app launch --no-window
           curl -fsS http://127.0.0.1:4747/api/info
-          ./uninstall.sh
-          sleep 4
+          bash -x ./uninstall.sh
+          sleep 2
           ! curl -fsS --max-time 3 http://127.0.0.1:4747/api/info

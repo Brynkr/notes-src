@@ -30,10 +30,18 @@ export class SearchIndex {
 
   private open(): DatabaseSync {
     if (this.file !== ":memory:") fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    let db: DatabaseSync | null = null;
     try {
-      return this.init(new (sqlite())(this.file));
+      db = new (sqlite())(this.file);
+      return this.init(db);
     } catch {
       // Corrupt or from an incompatible version: throw it away and start again.
+      // Close it first: Windows can't delete a file that's still open.
+      try {
+        db?.close();
+      } catch {
+        /* already closed */
+      }
       for (const suffix of ["", "-wal", "-shm", "-journal"]) fs.rmSync(this.file + suffix, { force: true });
       return this.init(new (sqlite())(this.file));
     }

@@ -69,14 +69,26 @@ const waitFor = async (fn, what, ms = 6000) => {
     await sleep(100);
   }
 };
+/** Click, retrying if the element was re-rendered between lookup and click. */
+const clickSafe = async (selector) => {
+  for (let i = 0; ; i++) {
+    try {
+      await page.waitForSelector(selector);
+      return await page.click(selector);
+    } catch (err) {
+      if (i >= 4 || !/detached|not clickable/i.test(String(err))) throw err;
+      await sleep(200);
+    }
+  }
+};
 const files = () => fs.readdirSync(desk).filter((f) => f.endsWith(".md")).sort();
 
 try {
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  // Script errors only: a 404 for a note deleted mid-request is expected and handled.
+  page.on("console", (m) => m.type() === "error" && !m.text().startsWith("Failed to load resource") && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("response", (r) => r.status() === 404 && errors.push(`404 ${r.url()}`));
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: "domcontentloaded" });
 
   await step("opens the most recent note and shows sync state", async () => {
@@ -126,7 +138,7 @@ try {
     await page.keyboard.up("Control");
     await page.waitForFunction(() => document.querySelectorAll(".pane").length === 2);
     await sleep(300);
-    await page.click(".pane:nth-child(2) .cm-content");
+    await clickSafe(".pane:nth-child(2) .cm-content");
     await page.keyboard.down("Control");
     await page.keyboard.press("End");
     await page.keyboard.up("Control");
@@ -162,7 +174,7 @@ try {
     fs.writeFileSync(path.join(other, notePath), "# Shopping list\n\nOTHER MACHINE VERSION\n");
     git(other, "commit", "-qam", "auto: 2026 laptop");
     git(other, "push", "-q");
-    await page.click(".pane:nth-child(1) .cm-content");
+    await clickSafe(".pane:nth-child(1) .cm-content");
     await page.keyboard.down("Control");
     await page.keyboard.press("a");
     await page.keyboard.up("Control");

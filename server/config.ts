@@ -59,12 +59,23 @@ export function defaults(): Config {
     branch: "main",
     host: "127.0.0.1",
     port: 4747,
-    machineName: os.hostname().split(".")[0] || "machine",
+    machineName: defaultMachineName(),
     syncIdleSeconds: 8,
     syncIntervalSeconds: 180,
     sync: true,
     allowedHosts: [],
   };
+}
+
+/** Host name, cut down to what Settings accepts (letters, digits, . _ - space; 40 chars). */
+export function defaultMachineName(host = os.hostname()): string {
+  const clean = host
+    .split(".")[0]
+    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 40)
+    .replace(/[-. _]+$/, "");
+  return clean || "machine";
 }
 
 export function loadConfigFile(): Partial<Config> {
@@ -83,7 +94,7 @@ export function saveConfigFile(cfg: Partial<Config>): void {
 }
 
 export interface Cli {
-  command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch" | "configure" | "stop" | "has-password";
+  command: "serve" | "set-password" | "clear-password" | "help" | "version" | "launch" | "configure" | "stop" | "has-password" | "running";
   overrides: Partial<Config>;
   open: boolean;
   save: boolean;
@@ -114,6 +125,7 @@ export function parseArgs(argv: string[]): Cli {
       case "configure":
       case "stop":
       case "has-password":
+      case "running":
         cli.command = a;
         break;
       case "-h":
@@ -209,6 +221,7 @@ Usage:
   notes-app [options]            start the server
   notes-app launch [--no-window] start it in the background if needed, open the app window
   notes-app stop                 stop a running server (after a final sync)
+  notes-app running              exit code 0 if a server is running, 1 if not
   notes-app configure [options]  save options as defaults without starting
   notes-app set-password         require a password (needed for --lan)
   notes-app clear-password
