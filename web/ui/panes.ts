@@ -1,8 +1,10 @@
 // The main area: a CSS grid of 1-4 panes, each with a header and an editor.
 
 import { extractTitle } from "../../shared/markdown.ts";
-import { ApiError } from "../api.ts";
+import type { Backlink } from "../../shared/types.ts";
+import { api, ApiError } from "../api.ts";
 import { createEditor, type PaneEditor } from "../editor/cm.ts";
+import { refreshLinks, type LinkHost } from "../editor/wikilinks.ts";
 import type { BufferStore, NoteBuffer } from "../state/buffers.ts";
 import type { PaneState, Workspace } from "../state/workspace.ts";
 import { h, icons, modKey } from "./dom.ts";
@@ -15,7 +17,11 @@ export interface PaneDeps {
   deleteNote: (path: string) => Promise<void>;
   newNote: () => void;
   extraKeys: (paneId: string) => { key: string; run: () => boolean }[];
+  links: LinkHost;
+  openNote: (path: string, toSide: boolean) => void;
 }
+
+const BACKLINKS_KEY = "notes-app:backlinks-open";
 
 class Pane {
   readonly id: string;
@@ -24,6 +30,8 @@ class Pane {
   private readonly dotEl: HTMLElement;
   private readonly body: HTMLElement;
   private readonly deleteBtn: HTMLButtonElement;
+  private readonly backlinksEl: HTMLElement;
+  private backlinkSeq = 0;
   private editor: PaneEditor | null = null;
   private buffer: NoteBuffer | null = null;
   notePath: string | null = null;
@@ -45,6 +53,7 @@ class Pane {
       onclick: () => this.onDelete(),
     });
     this.body = h("div", { class: "pane-body" });
+    this.backlinksEl = h("footer", { class: "backlinks", hidden: true });
     this.el = h(
       "section",
       { class: "pane", "data-pane": id, onpointerdown: () => deps.workspace.setActive(id) },
@@ -78,13 +87,89 @@ class Pane {
         }),
       ),
       this.body,
+      this.backlinksEl,
     );
+  }
+
+  /** Re-fetch "Linked from" for the open note. */
+  async loadBacklinks(): Promise<void> {
+    const path = this.notePath;
+    const seq = ++this.backlinkSeq;
+    if (!path) {
+      this.backlinksEl.hidden = true;
+      return;
+    }
+    let links: Backlink[];
+    try {
+      links = await api.backlinks(path);
+    } catch {
+      return;
+    }
+    if (seq !== this.backlinkSeq) return;
+    this.renderBacklinks(links);
+  }
+
+  private renderBacklinks(links: Backlink[]): void {
+    this.backlinksEl.hidden = links.length === 0;
+    if (!links.length) return;
+    const open = (() => {
+      try {
+        return localStorage.getItem(BACKLINKS_KEY) !== "0";
+      } catch {
+        return true;
+      }
+    })();
+    const toggle = h(
+      "button",
+      {
+        class: "backlinks-toggle",
+        "aria-expanded": String(open),
+        onclick: () => {
+          try {
+            localStorage.setItem(BACKLINKS_KEY, open ? "0" : "1");
+          } catch {
+            /* ignore */
+          }
+          this.renderBacklinks(links);
+        },
+      },
+      `Linked from ${links.length} note${links.length === 1 ? "" : "s"}`,
+      h("span", { class: "chev" }, open ? "▾" : "▸"),
+    );
+    this.backlinksEl.replaceChildren(
+      toggle,
+      ...(open
+        ? [
+            h(
+              "div",
+              { class: "backlinks-list" },
+              ...links.map((b) =>
+                h(
+                  "button",
+                  {
+                    class: "backlink",
+                    title: b.path,
+                    onclick: (e: MouseEvent) => this.deps.openNote(b.path, e.metaKey || e.ctrlKey),
+                  },
+                  h("span", { class: "backlink-title" }, b.title),
+                  h("span", { class: "backlink-context" }, b.context),
+                ),
+              ),
+            ),
+          ]
+        : []),
+    );
+  }
+
+  refreshLinks(): void {
+    this.editor?.view.dispatch({ effects: refreshLinks.of(null) });
   }
 
   async show(state: PaneState): Promise<void> {
     const seq = ++this.loadSeq;
     this.notePath = state.notePath;
     this.teardown();
+    void this.loadBacklinks();
     if (!state.notePath) return this.showEmpty();
     this.body.replaceChildren(h("div", { class: "pane-loading" }, "Opening…"));
     let buffer: NoteBuffer;
@@ -113,6 +198,7 @@ class Pane {
       onViewState: (cursor, scrollTop) => this.deps.workspace.saveView(this.id, cursor, scrollTop),
       onRefresh: () => this.refreshHeader(),
       extraKeys: this.deps.extraKeys(this.id),
+      links: this.deps.links,
     });
     const view = this.editor.view;
     requestAnimationFrame(() => {
@@ -137,7 +223,7 @@ class Pane {
         { class: "pane-empty" },
         h("p", { class: "pane-empty-lead" }, "Pick a note from the list, or start a new one."),
         h("button", { class: "btn", onclick: () => this.deps.newNote() }, "New note"),
-        h("p", { class: "pane-empty-hint" }, `Alt+N new note · ${modKey}+K search · ${modKey}+\\ split`),
+        h("p", { class: "pane-empty-hint" }, `${modKey}+P go to note · Alt+N new note · ${modKey}+K search · ${modKey}+\\ split`),
       ),
     );
   }
@@ -225,6 +311,14 @@ export class PaneGrid {
       pane.el.classList.toggle("active", ps.id === state.activePaneId);
     });
     this.el.classList.toggle("multi", state.panes.length > 1);
+  }
+
+  /** The set of notes changed: restyle links, refresh backlinks. */
+  notesChanged(): void {
+    for (const pane of this.panes.values()) {
+      pane.refreshLinks();
+      void pane.loadBacklinks();
+    }
   }
 
   focusActive(): void {

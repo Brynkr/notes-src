@@ -1,6 +1,7 @@
 // Web UI entry point. Wires sidebar, panes, status bar and server events.
 
 import type { NoteMeta, SyncStatusDto } from "../shared/types.ts";
+import { linkKey, resolveLink } from "../shared/links.ts";
 import { api, subscribe } from "./api.ts";
 import { BufferStore } from "./state/buffers.ts";
 import { Workspace } from "./state/workspace.ts";
@@ -8,6 +9,7 @@ import { h, icons, isMac, toast } from "./ui/dom.ts";
 import { PaneGrid } from "./ui/panes.ts";
 import { Sidebar } from "./ui/sidebar.ts";
 import { ConflictBanner, originalOf, StatusBar } from "./ui/statusbar.ts";
+import { QuickSwitcher } from "./ui/switcher.ts";
 
 const workspace = new Workspace();
 const buffers = new BufferStore();
@@ -16,11 +18,12 @@ let status: SyncStatusDto | null = null;
 
 // --- actions -----------------------------------------------------------------
 
-async function createNote(title: string): Promise<void> {
+async function createNote(title: string, toSide = false): Promise<void> {
   try {
     const note = await api.create(title);
     buffers.adopt(note.path, note.text, note.hash);
-    workspace.open(note.path);
+    if (toSide) workspace.openToSide(note.path);
+    else workspace.open(note.path);
     await refreshNotes();
     if (isNarrow()) setSidebarOpen(false);
     grid.focusActive();
@@ -74,7 +77,9 @@ async function refreshNotes(): Promise<void> {
   refreshing = (async () => {
     try {
       notes = await api.list();
+      rebuildLinkKeys();
       sidebar.setNotes(notes);
+      grid.notesChanged();
       sidebar.setActivePath(workspace.active.notePath);
     } catch {
       /* server down: status bar already says so */
@@ -108,10 +113,35 @@ const sidebar = new Sidebar({
   collapse: () => setSidebarOpen(false),
 });
 
+/** Follow a wiki link: open the note, or create it if it doesn't exist yet. */
+function followLink(target: string, toSide: boolean): void {
+  const hit = resolveLink(target, notes);
+  if (hit) openNote(hit.path, toSide);
+  else void createNote(target, toSide);
+}
+
+let linkKeys = new Set<string>();
+function rebuildLinkKeys(): void {
+  linkKeys = new Set();
+  for (const n of notes) {
+    linkKeys.add(linkKey(n.title));
+    const base = n.path.slice(n.path.lastIndexOf("/") + 1).replace(/\.md$/i, "");
+    linkKeys.add(linkKey(base));
+    linkKeys.add(linkKey(base.replace(/^\d{8}-\d{6}-/, "")));
+    linkKeys.add(linkKey(n.path));
+  }
+}
+
 const grid = new PaneGrid({
   workspace,
   buffers,
   deleteNote,
+  openNote,
+  links: {
+    notes: () => notes,
+    exists: (target) => linkKeys.has(linkKey(target)),
+    follow: followLink,
+  },
   newNote: () => showNewNote(),
   extraKeys: () => [
     {
@@ -122,6 +152,13 @@ const grid = new PaneGrid({
       },
     },
   ],
+});
+
+const switcher = new QuickSwitcher({
+  notes: () => notes,
+  open: openNote,
+  create: (title, toSide) => void createNote(title, toSide),
+  cancel: () => grid.focusActive(),
 });
 
 const statusbar = new StatusBar({ syncNow: () => void syncNow(), setLayout: (l) => workspace.setLayout(l) });
@@ -138,7 +175,7 @@ statusbar.el.prepend(sidebarToggle);
 const resizer = h("div", { class: "resizer", role: "separator", "aria-orientation": "vertical", title: "Drag to resize" });
 const scrim = h("div", { class: "scrim", onclick: () => setSidebarOpen(false) });
 const main = h("main", { class: "main" }, banner.el, grid.el, statusbar.el);
-const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main);
+const root = h("div", { class: "app" }, sidebar.el, resizer, scrim, main, switcher.el);
 document.getElementById("app")!.replaceWith(root);
 
 function showNewNote(): void {
@@ -210,8 +247,13 @@ window.addEventListener(
     if (e.altKey && !mod && e.code === "KeyN") {
       e.preventDefault();
       showNewNote();
-    } else if (mod && !e.shiftKey && (e.key === "k" || e.key === "p")) {
+    } else if (mod && !e.shiftKey && !e.altKey && (e.key === "p" || e.key === "o")) {
       e.preventDefault();
+      if (switcher.isOpen) switcher.close(true);
+      else switcher.show();
+    } else if (mod && ((!e.shiftKey && e.key === "k") || (e.shiftKey && e.code === "KeyF"))) {
+      e.preventDefault();
+      switcher.close(false);
       setSidebarOpen(true);
       sidebar.focusSearch();
     } else if (mod && e.key === "\\") {
@@ -232,6 +274,12 @@ window.addEventListener(
   },
   { capture: true },
 );
+
+// Show links as clickable while Ctrl/Cmd is held.
+const setModHeld = (on: boolean) => root.classList.toggle("mod-held", on);
+window.addEventListener("keydown", (e) => (e.key === "Control" || e.key === "Meta") && setModHeld(true));
+window.addEventListener("keyup", (e) => (e.key === "Control" || e.key === "Meta") && setModHeld(false));
+window.addEventListener("blur", () => setModHeld(false));
 
 // --- server events -------------------------------------------------------------
 

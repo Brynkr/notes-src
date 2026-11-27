@@ -1,6 +1,6 @@
 // Thin client for the server's HTTP API.
 
-import type { AppInfo, NoteContent, NoteMeta, SaveRequest, SaveResponse, SearchHit, ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import type { AppInfo, Backlink, NoteContent, NoteMeta, SaveRequest, SaveResponse, SearchHit, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -46,6 +46,7 @@ export const api = {
   save: (req: SaveRequest, keepalive = false) => call<SaveResponse>("PUT", "/api/note", req, { keepalive }),
   create: (title: string) => call<NoteContent>("POST", "/api/notes", { title }),
   remove: (path: string) => call<{ ok: true }>("DELETE", `/api/note?path=${q(path)}`),
+  backlinks: (path: string) => call<Backlink[]>("GET", `/api/backlinks?path=${q(path)}`),
   search: (query: string) => call<SearchHit[]>("GET", `/api/search?q=${q(query)}`),
   sync: () => call<SyncStatusDto>("POST", "/api/sync", {}),
   focus: () => call<{ ok: true }>("POST", "/api/focus", {}),

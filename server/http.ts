@@ -14,7 +14,8 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
-import type { AppInfo, SaveRequest, ServerEvent, SyncStatusDto } from "../shared/types.ts";
+import { keysForNote } from "../shared/links.ts";
+import type { AppInfo, Backlink, SaveRequest, ServerEvent, SyncStatusDto } from "../shared/types.ts";
 import { verifyPassword } from "./config.ts";
 import { BadPath, Changed, NotFound, type NoteStore } from "./notes.ts";
 import type { SearchIndex } from "./search.ts";
@@ -151,6 +152,17 @@ export function createApp(ctx: AppContext) {
       case "GET /api/search": {
         const q = url.searchParams.get("q") ?? "";
         return send(res, 200, ctx.search.search(q));
+      }
+      case "GET /api/backlinks": {
+        const p = url.searchParams.get("path") ?? "";
+        ctx.store.resolve(p); // validates
+        const meta = ctx.store.known.get(p)?.meta;
+        const keys = keysForNote(p, meta?.title ?? "");
+        const hits = ctx.search
+          .backlinks(keys)
+          .filter((b) => b.path !== p)
+          .map((b) => ({ ...b, title: ctx.store.known.get(b.path)?.meta.title ?? b.path }));
+        return send(res, 200, hits satisfies Backlink[]);
       }
       case "POST /api/sync":
         return send(res, 200, await ctx.syncNow());

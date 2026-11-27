@@ -51,6 +51,13 @@ export interface SearchHit {
   snippet: string;
 }
 
+export interface Backlink {
+  path: string;
+  title: string;
+  /** The line of the linking note that contains the link. */
+  context: string;
+}
+
 export interface AppInfo {
   machineName: string;
   repoPath: string;

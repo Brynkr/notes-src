@@ -11,6 +11,7 @@ import { Annotation, EditorSelection, EditorState, Transaction, type Text } from
 import { drawSelection, EditorView, highlightActiveLine, keymap, placeholder, dropCursor } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { BufferStore, BufferView, NoteBuffer } from "../state/buffers.ts";
+import { linkAtCursor, wikiLinks, type LinkHost } from "./wikilinks.ts";
 
 /** Marks transactions that replay another pane's edit, so they aren't echoed back. */
 const fromOtherPane = Annotation.define<boolean>();
@@ -46,6 +47,21 @@ const theme = EditorView.theme({
   ".cm-panels": { backgroundColor: "var(--panel)", color: "var(--ink)", borderColor: "var(--line)" },
   ".cm-searchMatch": { backgroundColor: "var(--mark)" },
   ".cm-textfield, .cm-button": { fontFamily: "var(--ui-font)" },
+  ".cm-wikilink": { color: "var(--accent)", textDecoration: "underline", textDecorationColor: "var(--accent-soft)", textUnderlineOffset: "3px" },
+  ".cm-wikilink-missing": { color: "var(--muted)", textDecorationStyle: "dashed", textDecorationColor: "var(--faint)" },
+  ".cm-tooltip.cm-tooltip-autocomplete": {
+    border: "1px solid var(--line)",
+    background: "var(--bg)",
+    borderRadius: "8px",
+    boxShadow: "var(--shadow)",
+    fontFamily: "var(--ui-font)",
+    fontSize: "14px",
+    overflow: "hidden",
+  },
+  ".cm-tooltip-autocomplete > ul > li": { padding: "5px 12px !important", lineHeight: "1.4" },
+  ".cm-tooltip-autocomplete > ul > li[aria-selected]": { background: "var(--accent-soft)", color: "var(--ink)" },
+  ".cm-completionMatchedText": { textDecoration: "none", color: "var(--accent)", fontWeight: "700" },
+  ".cm-completionDetail": { color: "var(--faint)", marginLeft: "8px", fontStyle: "normal" },
 });
 
 export interface PaneEditor extends BufferView {
@@ -62,6 +78,7 @@ export function createEditor(opts: {
   onViewState: (cursor: { anchor: number; head: number }, scrollTop: number) => void;
   onRefresh: () => void;
   extraKeys?: { key: string; run: () => boolean }[];
+  links: LinkHost;
 }): PaneEditor {
   const { buffer, store } = opts;
   const len = buffer.doc.length;
@@ -87,7 +104,23 @@ export function createEditor(opts: {
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(markdownHighlight),
         placeholder("Start writing…"),
-        keymap.of([...(opts.extraKeys ?? []), ...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+        keymap.of([
+          ...(opts.extraKeys ?? []),
+          {
+            key: "Alt-Enter",
+            run: (v) => {
+              const target = linkAtCursor(v);
+              if (!target) return false;
+              opts.links.follow(target, false);
+              return true;
+            },
+          },
+          ...defaultKeymap,
+          ...historyKeymap,
+          ...searchKeymap,
+          indentWithTab,
+        ]),
+        wikiLinks(opts.links),
         theme,
         EditorView.contentAttributes.of({ spellcheck: "true", autocorrect: "on", autocapitalize: "sentences" }),
         EditorView.domEventHandlers({

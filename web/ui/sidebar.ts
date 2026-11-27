@@ -76,7 +76,7 @@ export class Sidebar {
       h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput),
       this.newForm,
       this.list,
-      h("div", { class: "sidebar-foot" }, `${modKey}+K search · ${modKey}+click opens to the side`),
+      h("div", { class: "sidebar-foot" }, `${modKey}+P go to note · ${modKey}+K search`),
     );
   }
 
