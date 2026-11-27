@@ -11,7 +11,7 @@ npm install
 npm run build        # esbuild -> dist/server.js + dist/web/
 npm run typecheck    # tsc --noEmit (TypeScript 7)
 npm test             # node:test, runs .ts directly; real git against temp repos
-npm run test:ui      # builds, then headless Chrome end-to-end, two suites (set CHROME=... if not found)
+npm run test:ui      # builds, then headless Chrome end-to-end: smoke, features, offline (set CHROME=... if not found)
 npm run package      # release/*.zip + *.tar.gz with installers
 node dist/server.js --repo /tmp/some-notes --no-sync --open   # try it locally
 NOTES_APP_CONFIG_DIR=/tmp/c NOTES_APP_DATA_DIR=/tmp/d node dist/server.js   # fresh, unconfigured (setup screen)
