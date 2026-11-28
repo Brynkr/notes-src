@@ -152,7 +152,10 @@ npm test                   # unit + sync scenarios with real git in temp repos
 npm run test:ui            # end-to-end in headless Chrome; screenshots in tests/ui/screenshots
 npm run package            # release/*.zip and *.tar.gz with the installers
 npm run exe                # release/Notes.exe (on Windows) or release/notes: portable single executable
+npm run release            # all of a release in one go: package + exe + test:exe (run on Windows for Notes.exe)
 ```
+
+**Making a release (on the Windows PC):** bump `version` in `package.json`, then `npm install && npm run release`. `release/` then holds `notes-app-<version>.zip` and `.tar.gz` (installers for every OS) and `Notes.exe` (portable Windows app), and the exe has passed its smoke test. Each step only replaces its own files, so the order doesn't matter.
 
 `npm run exe` uses Node's [single executable applications](https://nodejs.org/api/single-executable-applications.html) feature: it bundles the server as CommonJS, embeds `dist/web/` as assets, injects both into a copy of the running `node` binary with `postject`, sets the icon and version with `rcedit`, and marks the exe as a windowed app so no console opens (`--console` keeps one, for debugging). A Windows exe has to be built on Windows (macOS/Linux builds a `release/notes` for that OS). `npm run test:exe` then runs the built exe through launch → setup → new note → sync → stop, using port 4799 and a temp folder.
 
