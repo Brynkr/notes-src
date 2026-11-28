@@ -244,6 +244,10 @@ const grid = new PaneGrid({
   buffers,
   deleteNote,
   openNote,
+  openInPane: (path, paneId) => {
+    workspace.open(path, paneId);
+    requestAnimationFrame(() => grid.focusActive());
+  },
   showHistory: (target) => void historyDialog.show(target),
   editorPrefs: () => ({ lineNumbers: appearance.value.lineNumbers, activeLine: appearance.value.activeLine, spellcheck: appearance.value.spellcheck }),
   links: {

@@ -337,6 +337,67 @@ try {
     assert.ok(!homeTitles.includes("Standup"));
   });
 
+  // Real drag events, dispatched in the page (headless Chrome has no mouse-driven drag).
+  const drag = (srcSel, dstSel) =>
+    page.evaluate(
+      (s, d) => {
+        const src = document.querySelector(s);
+        const dst = document.querySelector(d);
+        const dt = new DataTransfer();
+        const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+        fire(src, "dragstart");
+        fire(dst, "dragenter");
+        const accepted = !fire(dst, "dragover"); // preventDefault() = "you can drop here"
+        fire(dst, "drop");
+        fire(src, "dragend");
+        return accepted;
+      },
+      srcSel,
+      dstSel,
+    );
+  /** Pane titles in layout order (grid area a, b, c, d). */
+  const paneOrder = () =>
+    page.$$eval(".pane", (els) =>
+      els
+        .map((el) => [el.style.gridArea, el.querySelector(".pane-title").textContent])
+        .sort((x, y) => (x[0] < y[0] ? -1 : 1))
+        .map((x) => x[1]),
+    );
+
+  await step("drag a note from the sidebar onto a pane; drag panes by their title bars to swap them", async () => {
+    await page.click('.layouts [aria-label="Two side by side"]');
+    await waitFor(async () => (await page.$$(".pane")).length === 2, "two panes");
+    // Show "Garden plans" on the left so we know what's where.
+    await page.click('.pane[style*="grid-area: a"] .pane-title');
+    const garden = await page.$eval('.note-item[data-path$="garden-plans.md"]', (e) => e.dataset.path);
+    await page.click(`.note-item[data-path="${garden}"]`);
+    const left = () => page.$eval('.pane[style*="grid-area: a"] .pane-title', (e) => e.textContent);
+    await waitFor(async () => (await left()) === "Garden plans", "Garden plans on the left");
+    const textBefore = await page.$eval('.pane[style*="grid-area: a"] .cm-content', (e) => e.innerText);
+
+    // Drop "Weekly review" right onto the left pane's text: it opens there, nothing is pasted.
+    const weekly = await page.$eval('.note-item[data-path$="weekly-review.md"]', (e) => e.dataset.path);
+    assert.equal(await drag(`.note-item[data-path="${weekly}"]`, '.pane[style*="grid-area: a"] .cm-content'), true, "pane accepts the note");
+    await waitFor(async () => (await left()) === "Weekly review", "dropped note opens in that pane");
+    const garderText = await page.$eval('.pane[style*="grid-area: a"] .cm-content', (e) => e.innerText);
+    assert.ok(!garderText.includes(weekly), "the path wasn't typed into the note");
+    assert.notEqual(garderText, textBefore);
+
+    // Put Garden plans in the right pane, then swap the panes by dragging the right title bar onto the left pane.
+    assert.equal(await drag(`.note-item[data-path="${garden}"]`, '.pane[style*="grid-area: b"]'), true);
+    await waitFor(async () => (await paneOrder()).join("|") === "Weekly review|Garden plans", "right pane shows Garden plans");
+    await shot("25-before-swap");
+    assert.equal(await drag('.pane[style*="grid-area: b"] .pane-head', '.pane[style*="grid-area: a"]'), true, "pane accepts a pane");
+    await waitFor(async () => (await paneOrder()).join("|") === "Garden plans|Weekly review", "panes swapped");
+    assert.equal(await page.$(".pane.drop-target"), null, "highlight cleared");
+    // A pane can't be dropped on itself.
+    assert.equal(await drag('.pane[style*="grid-area: a"] .pane-head', '.pane[style*="grid-area: a"]'), false);
+    // Nothing was written into either note by the drops.
+    for (const f of [garden, weekly]) assert.ok(!read(f).includes("Home/"), `${f} untouched`);
+    await shot("26-after-swap");
+    await page.click('.layouts [aria-label="One pane"]');
+  });
+
   // The setup refusal above is an expected 400. While Settings restarts the
   // notes runtime, reads get 409 ("not set up") for a moment; the UI retries.
   const unexpected = errors.filter(

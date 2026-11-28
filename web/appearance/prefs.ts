@@ -21,6 +21,10 @@ export const RADII = {
   round: ["10px", "14px", "22px"],
 } as const;
 
+/** Text cursor shapes (CSS in style.css, by html[data-cursor]). */
+export const CURSORS = { line: "Line", bold: "Bold line", block: "Block", underline: "Underline" } as const;
+export type CursorStyle = keyof typeof CURSORS;
+
 export interface Appearance {
   theme: string;
   editorFont: EditorFont;
@@ -34,6 +38,8 @@ export interface Appearance {
   activeLine: boolean;
   spellcheck: boolean;
   motion: boolean;
+  cursor: CursorStyle;
+  cursorBlink: boolean;
   /** Text zoom for notes, 0.7–2. */
   zoom: number;
 }
@@ -51,6 +57,8 @@ export const DEFAULTS: Appearance = {
   activeLine: true,
   spellcheck: true,
   motion: true,
+  cursor: "line",
+  cursorBlink: true,
   zoom: 1,
 };
 
@@ -82,6 +90,8 @@ export function validate(raw: unknown): Appearance {
     activeLine: typeof r.activeLine === "boolean" ? r.activeLine : d.activeLine,
     spellcheck: typeof r.spellcheck === "boolean" ? r.spellcheck : d.spellcheck,
     motion: typeof r.motion === "boolean" ? r.motion : d.motion,
+    cursor: oneOf(r.cursor, Object.keys(CURSORS) as CursorStyle[], d.cursor),
+    cursorBlink: typeof r.cursorBlink === "boolean" ? r.cursorBlink : d.cursorBlink,
     zoom: typeof r.zoom === "number" && Number.isFinite(r.zoom) ? clampZoom(r.zoom) : d.zoom,
   };
 }
@@ -176,6 +186,8 @@ export class AppearanceStore {
     root.dataset.borders = a.borders;
     root.dataset.density = a.density;
     root.dataset.motion = a.motion ? "on" : "off";
+    root.dataset.cursor = a.cursor;
+    root.dataset.cursorBlink = a.cursorBlink ? "on" : "off";
     for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
       meta.content = c.bg;
       meta.removeAttribute("media");

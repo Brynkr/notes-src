@@ -896,3 +896,27 @@ button { font: inherit; color: inherit; }
 .diff-titles h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-sub { font-size: 12.5px; }
 .diff-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 0; border-bottom: 1px solid var(--line); }
+
+/* --- Text cursor: shape and blinking (Appearance → Editor) ---------------- */
+html[data-cursor-blink="off"] .cm-editor .cm-cursorLayer { animation: none !important; }
+html[data-cursor="bold"] .cm-editor .cm-cursor { border-left-width: 3px !important; }
+html[data-cursor="block"] .cm-editor .cm-cursor {
+  width: 0.55em;
+  border-left: none !important;
+  margin-left: 0;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+html[data-cursor="underline"] .cm-editor .cm-cursor {
+  width: 0.55em;
+  border-left: none !important;
+  margin-left: 0;
+  border-bottom: 2px solid var(--accent);
+}
+
+/* --- Drag and drop: notes onto panes, panes by their title bar ----------- */
+.pane-head[draggable="true"] { cursor: grab; }
+.pane-head[draggable="true"]:active { cursor: grabbing; }
+.pane-head .icon-btn { cursor: pointer; }
+.pane.dragging { opacity: 0.55; }
+.pane.drop-target { box-shadow: inset 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
+.note-item[draggable="true"], .tree-file[draggable="true"] { -webkit-user-drag: element; }
