@@ -256,7 +256,7 @@ const grid = new PaneGrid({
     {
       key: "Mod-s",
       run: () => {
-        void buffers.flushAll();
+        saveAll();
         return true;
       },
     },
@@ -448,7 +448,7 @@ window.addEventListener(
       void settingsDialog.show();
     } else if (mod && e.key === "s") {
       e.preventDefault(); // never show the browser's "Save page" dialog
-      void buffers.flushAll();
+      saveAll();
     }
   },
   { capture: true },
@@ -529,7 +529,21 @@ buffers.on("error", (msg) => {
 });
 buffers.on("changed", () => {
   if (!buffers.all().some((b) => b.lastError)) statusbar.setSaveError(null);
+  statusbar.setSavedOffline(buffers.savedOffline);
 });
+// No connection: quietly keep the text in this browser (no toast, nothing to click).
+buffers.on("offline", () => statusbar.setSavedOffline(true));
+// Back online: save what's waiting now, and ask the server to sync.
+window.addEventListener("online", () => {
+  buffers.retryNow();
+  void api.focus().catch(() => undefined);
+});
+
+/** Ctrl/Cmd+S: keep a copy in this browser at once, then save to the server (works offline too). */
+function saveAll(): void {
+  buffers.stashNow();
+  void buffers.flushAll();
+}
 
 window.addEventListener("focus", () => void api.focus().catch(() => undefined));
 window.addEventListener("beforeunload", (e) => {

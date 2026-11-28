@@ -313,9 +313,15 @@ class Pane {
       this.titleEl.title = b.path;
       this.langEl.hidden = note;
       this.langEl.textContent = note ? "" : (languageName(b.path) ?? "");
-      const state = b.lastError ? "error" : b.saving ? "saving" : b.dirty ? "dirty" : "clean";
+      const state = b.lastError ? "error" : b.offline && b.dirty ? "offline" : b.saving ? "saving" : b.dirty ? "dirty" : "clean";
       this.dotEl.className = `dirty-dot ${state}`;
-      this.dotEl.title = { error: `Not saved: ${b.lastError}`, saving: "Saving…", dirty: "Unsaved changes", clean: "Saved" }[state];
+      this.dotEl.title = {
+        error: `Not saved: ${b.lastError}`,
+        offline: "Saved on this device; syncs when the connection is back",
+        saving: "Saving…",
+        dirty: "Unsaved changes",
+        clean: "Saved",
+      }[state];
     });
   }
 

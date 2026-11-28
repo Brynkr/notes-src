@@ -442,20 +442,26 @@ export async function isEarlierVersion(git: Git, repoRel: string, abs: string): 
 export class SyncScheduler {
   private idleTimer: NodeJS.Timeout | null = null;
   private interval: NodeJS.Timeout | null = null;
+  private offlineTimer: NodeJS.Timeout | null = null;
+  private stopped = false;
   private lastFocusSync = 0;
   readonly engine: SyncEngine;
   readonly idleMs: number;
   readonly intervalMs: number;
   readonly focusMinGapMs: number;
+  /** While offline, try again this often, so saved work reaches GitHub soon after the connection is back. */
+  readonly offlineRetryMs: number;
 
-  constructor(engine: SyncEngine, opts: { idleMs?: number; intervalMs?: number; focusMinGapMs?: number } = {}) {
+  constructor(engine: SyncEngine, opts: { idleMs?: number; intervalMs?: number; focusMinGapMs?: number; offlineRetryMs?: number } = {}) {
     this.engine = engine;
     this.idleMs = opts.idleMs ?? 8_000;
     this.intervalMs = opts.intervalMs ?? 3 * 60_000;
     this.focusMinGapMs = opts.focusMinGapMs ?? 30_000;
+    this.offlineRetryMs = opts.offlineRetryMs ?? 30_000;
   }
 
   start(): void {
+    this.engine.on("status", this.onStatus);
     void this.engine.request();
     if (this.intervalMs > 0) {
       this.interval = setInterval(() => void this.engine.request(), this.intervalMs);
@@ -484,8 +490,21 @@ export class SyncScheduler {
     return this.engine.request();
   }
 
+  /** Offline: keep retrying at offlineRetryMs until a sync gets through. */
+  private readonly onStatus = (s: SyncStatus): void => {
+    if (this.stopped || s.state !== "offline" || this.offlineTimer) return;
+    this.offlineTimer = setTimeout(() => {
+      this.offlineTimer = null;
+      void this.engine.request();
+    }, this.offlineRetryMs);
+    this.offlineTimer.unref();
+  };
+
   /** Final sync at quit, bounded so the app never hangs on close. */
   async shutdown(timeoutMs = 10_000): Promise<void> {
+    this.stopped = true;
+    this.engine.off("status", this.onStatus);
+    if (this.offlineTimer) clearTimeout(this.offlineTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.interval) clearInterval(this.interval);
     await Promise.race([this.engine.request(), new Promise((r) => setTimeout(r, timeoutMs).unref())]);

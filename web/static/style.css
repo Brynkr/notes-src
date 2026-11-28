@@ -266,6 +266,7 @@ button { font: inherit; color: inherit; }
 .dirty-dot { flex: none; width: 7px; height: 7px; margin: 0 6px; border-radius: 50%; transition: background 0.2s; }
 .dirty-dot.dirty, .dirty-dot.saving { background: var(--faint); }
 .dirty-dot.error { background: var(--bad); }
+.dirty-dot.offline { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warn); }
 .pane-head .icon-btn { opacity: 0.55; }
 .pane:hover .pane-head .icon-btn, .pane.active .pane-head .icon-btn { opacity: 1; }
 
