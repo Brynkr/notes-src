@@ -324,7 +324,7 @@ A merge can rewrite files that are open. The file watcher must tell the buffer s
 | Later: wiki links + backlinks | Done (27 Nov) |
 | Later: per-note history | Done (27 Nov): history dialog with diff and restore |
 | Appearance (themes, fonts, zoom) | Done (28 Nov) |
-| Portable Windows exe | Done (28 Nov); `npm run test:exe` passed on Windows (in CI, before CI was removed) and Linux |
+| Portable Windows exe | Done (28 Nov); `npm run test:exe` passed on the owner's Windows PC (28 Nov), and earlier in CI and on Linux. `npm run release` builds it with the archives |
 | Later: tags UI, Markdown preview, draggable dividers | Not built |
 
 ## 13. Testing
@@ -438,6 +438,13 @@ Baseline before changes: typecheck, build and all 74 unit tests pass on the owne
 - *UI tests on Windows* (bug found while testing): `test:ui` only looked for Chrome in Linux/macOS locations, so it never ran on Windows without `CHROME=...`. `tests/ui/chrome.mjs` now also finds Chrome and Edge under Program Files / LocalAppData. Running it on Windows showed two things that were already there before the modes change (checked against the old code): the features test saw brief 409s on `GET /api/notes` and `/api/note` while Settings restarts the runtime (the UI retries; the test now allows them), and the smoke test read files mid-merge (it now waits for the merge to finish).
 
 - *Offline saving: with no connection, notes should be kept locally (Ctrl+S included, with no prompts) and sync on reconnect* (change; mostly built already). What was already true: desktops save to disk with no internet and sync later; the browser keeps unsaved text in localStorage and saves it when the server is back. Gaps fixed: (1) while offline the server retried sync only every 3 min; it now retries every 30 s (`SyncScheduler.offlineRetryMs`; test 8b). (2) In a browser that can't reach the server (phone ↔ Pi), Ctrl+S showed a red error toast and a red "Not saved" dot. Now Ctrl+S writes the browser copy at once (`stashNow`), and an unreachable server (no response, or 502/503/504 from `tailscale serve`) counts as "offline", not an error: no toast, a hollow amber dot on the note, "Offline · saved on this device" in the status bar. Saves are retried on the browser's `online` event as well as with backoff. Real save errors (400/413, disk) still show as errors. Tests: `tests/sync/sync.test.ts` 8b, `tests/ui/offline.mjs`.
+
+- *A Windows exe for each release* (change; the portable exe already existed but had never been built on the owner's PC). Built and smoke-tested on the owner's Windows 10 PC: `Notes.exe` 84 MB, Node 22.23.5 embedded, `npm run test:exe` passes (windowed, setup, UI from inside the exe, portable `Notes-data`, sync, push, stop). Fixed on the way: `test:exe` looked for the note at the repo root (now in `Home/`); a failed `test:exe` exited before stopping the exe, leaving it on port 4799 (it now always stops it, and refuses to start if the port is taken); `npm run package` deleted all of `release/`, including `Notes.exe` (now only its own files), and failed on Windows for lack of `zip` (uses Windows' built-in `tar -a` there). New: `npm run release` = package + exe + test:exe. Publishing to GitHub Releases: not done; asked the owner.
+
+- *Text cursor: an option to stop it blinking, and a few cursor shapes* (change): built. Appearance → Editor has "Cursor" (Line, Bold line, Block, Underline) and "Blinking cursor" (on by default). Per device like the other appearance options; pure CSS on CodeMirror's drawn cursor via `html[data-cursor]` / `html[data-cursor-blink]`, so live editors switch instantly. Test: `tests/ui/appearance.mjs`.
+- *Drag a note from the sidebar onto a pane in split view* (change): built. Note-list rows and IDE file-tree rows are draggable; dropping on a pane (anywhere, including its text) opens the note there and makes it active. Uses its own MIME type (`web/ui/dnd.ts`) and capture-phase handlers, so the editor never pastes the path as text.
+- *Drag pane title bars to rearrange panes* (change): built. Dropping a pane's title bar on another pane swaps their places (`Workspace.swap`); the editors aren't rebuilt (grid areas change), so cursor, scroll and undo history survive. Tests: `tests/web/workspace.test.ts`, `tests/ui/features.mjs` (real DragEvents in the page).
+- Not built: dropping between panes to insert a new split, or dragging onto the layout buttons; drag and drop needs a mouse (touch devices use the existing open/split buttons).
 
 **28 Nov 2026: Home and Work modes (built).**
 

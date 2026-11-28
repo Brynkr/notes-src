@@ -11,6 +11,10 @@ import { refreshLinks, type LinkHost } from "../editor/wikilinks.ts";
 import type { BufferStore, NoteBuffer } from "../state/buffers.ts";
 import type { PaneState, Workspace } from "../state/workspace.ts";
 import { h, icons, modKey } from "./dom.ts";
+import { dragKind, NOTE_DRAG, PANE_DRAG } from "./dnd.ts";
+
+/** The pane being dragged by its title bar, if any (dragover can't read the data). */
+let draggingPane: string | null = null;
 
 const AREAS = ["a", "b", "c", "d"];
 
@@ -22,6 +26,8 @@ export interface PaneDeps {
   extraKeys: (paneId: string) => { key: string; run: () => boolean }[];
   links: LinkHost;
   openNote: (path: string, toSide: boolean) => void;
+  /** A note dragged onto a pane: open it there. */
+  openInPane: (path: string, paneId: string) => void;
   showHistory: (target: HistoryTarget) => void;
   editorPrefs: () => EditorPrefs;
 }
@@ -75,7 +81,23 @@ class Pane {
       { class: "pane", "data-pane": id, onpointerdown: () => deps.workspace.setActive(id) },
       h(
         "header",
-        { class: "pane-head" },
+        {
+          class: "pane-head",
+          draggable: "true",
+          title: "Drag to move this pane",
+          ondragstart: (e: DragEvent) => {
+            if (!e.dataTransfer) return;
+            e.dataTransfer.setData(PANE_DRAG, id);
+            e.dataTransfer.effectAllowed = "move";
+            draggingPane = id;
+            this.el.classList.add("dragging");
+          },
+          ondragend: () => {
+            draggingPane = null;
+            this.el.classList.remove("dragging");
+            for (const el of document.querySelectorAll(".pane.drop-target")) el.classList.remove("drop-target");
+          },
+        },
         this.titleEl,
         this.dotEl,
         h("span", { class: "spacer" }),
@@ -108,6 +130,37 @@ class Pane {
       this.body,
       this.backlinksEl,
     );
+    // Capture phase, so the editor never sees our drops (it would insert them as text).
+    this.el.addEventListener("dragover", (e) => this.onDragOver(e), true);
+    this.el.addEventListener("dragleave", (e) => {
+      if (!this.el.contains(e.relatedTarget as Node | null)) this.el.classList.remove("drop-target");
+    });
+    this.el.addEventListener("drop", (e) => this.onDrop(e), true);
+  }
+
+  private onDragOver(e: DragEvent): void {
+    const kind = dragKind(e);
+    if (!kind || (kind === "pane" && draggingPane === this.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = kind === "pane" ? "move" : "copy";
+    this.el.classList.add("drop-target");
+  }
+
+  /** A note dropped here opens here; a pane dropped here swaps places with this one. */
+  private onDrop(e: DragEvent): void {
+    const kind = dragKind(e);
+    if (!kind) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.el.classList.remove("drop-target");
+    if (kind === "note") {
+      const path = e.dataTransfer?.getData(NOTE_DRAG);
+      if (path) this.deps.openInPane(path, this.id);
+    } else {
+      const from = e.dataTransfer?.getData(PANE_DRAG);
+      if (from && from !== this.id) this.deps.workspace.swap(from, this.id);
+    }
   }
 
   private openHistory(): void {

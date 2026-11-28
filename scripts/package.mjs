@@ -9,7 +9,8 @@ execFileSync(process.execPath, ["scripts/build.mjs"], { stdio: "inherit" });
 
 const name = `notes-app-${version}`;
 const out = path.join("release", name);
-fs.rmSync("release", { recursive: true, force: true });
+// Replace only this script's own output, so a Notes.exe built by `npm run exe` survives.
+for (const p of [out, `${out}.zip`, `${out}.tar.gz`]) fs.rmSync(p, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, "installer"), { recursive: true });
 
 fs.cpSync("dist", path.join(out, "app"), { recursive: true, filter: (src) => !src.endsWith(".map") });
@@ -38,7 +39,9 @@ GitHub repository URL. Full guide: README.md in the source repository.
 
 const cwd = "release";
 execFileSync("tar", ["-czf", `${name}.tar.gz`, name], { cwd });
-execFileSync("zip", ["-qr", `${name}.zip`, name], { cwd });
+// Windows has no `zip`, but its built-in tar (bsdtar) writes zips when asked (-a picks the format from .zip).
+if (process.platform === "win32") execFileSync("tar", ["-a", "-cf", `${name}.zip`, name], { cwd });
+else execFileSync("zip", ["-qr", `${name}.zip`, name], { cwd });
 for (const f of fs.readdirSync(cwd).filter((f) => !fs.statSync(path.join(cwd, f)).isDirectory())) {
   console.log(`release/${f}  ${(fs.statSync(path.join(cwd, f)).size / 1024).toFixed(0)} KB`);
 }

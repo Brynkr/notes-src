@@ -128,6 +128,41 @@ try {
     await page.screenshot({ path: path.join(SHOTS, "21-cards-round-mono.png") });
   });
 
+  await step("cursor: blinking can be turned off, and the shape changed", async () => {
+    await page.click(".pane .cm-content");
+    await page.waitForSelector(".cm-cursor");
+    const layerAnim = () => css(".cm-cursorLayer", "animation-name");
+    const cursorBox = () => page.$eval(".cm-cursor", (e) => ({ w: e.getBoundingClientRect().width, left: getComputedStyle(e).borderLeftWidth, bottom: getComputedStyle(e).borderBottomWidth }));
+    assert.notEqual(await layerAnim(), "none", "blinks by default");
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.cursor), "line");
+    await openPanel();
+    await page.$$eval(".ap-toggle", (els) => els.find((e) => e.textContent.includes("Blinking cursor")).click());
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.cursorBlink), "off");
+    assert.equal(await layerAnim(), "none", "no blinking");
+    for (const [label, ok] of [
+      ["Block", (b) => b.w > 5 && b.left === "0px"],
+      ["Underline", (b) => b.w > 5 && b.bottom === "2px"],
+      ["Bold line", (b) => b.left === "3px"],
+      ["Line", (b) => b.left === "2px"],
+    ]) {
+      await page.$$eval(".segmented button", (els, l) => els.find((e) => e.textContent === l).click(), label);
+      await page.click(".pane .cm-content"); // closes the panel; the cursor is redrawn
+      await page.waitForSelector(".cm-cursor");
+      const box = await cursorBox();
+      assert.ok(ok(box), `${label}: ${JSON.stringify(box)}`);
+      if (label === "Block") await page.screenshot({ path: path.join(SHOTS, "27-block-cursor.png") });
+      await openPanel();
+    }
+    // Remembered across a reload.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".pane .cm-content");
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.cursorBlink), "off");
+    await openPanel();
+    await page.$$eval(".ap-toggle", (els) => els.find((e) => e.textContent.includes("Blinking cursor")).click());
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.cursorBlink), "on");
+    await page.keyboard.press("Escape");
+  });
+
   await step("clicking outside closes the panel; Reset restores defaults", async () => {
     await openPanel();
     await page.mouse.click(400, 400);

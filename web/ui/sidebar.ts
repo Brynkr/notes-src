@@ -3,6 +3,7 @@
 import { MARK_END, MARK_START, type NoteMeta, type SearchHit } from "../../shared/types.ts";
 import { MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
 import { api } from "../api.ts";
+import { makeNoteDraggable } from "./dnd.ts";
 import { h, icons, modKey, relativeTime } from "./dom.ts";
 
 export interface SidebarDeps {
@@ -195,7 +196,7 @@ export class Sidebar {
   }
 
   private item(path: string, title: string, sub: Node | string, conflict: boolean): HTMLElement {
-    return h(
+    const el = h(
       "button",
       {
         class: `note-item${path === this.activePath ? " active" : ""}${conflict ? " is-conflict" : ""}`,
@@ -211,6 +212,8 @@ export class Sidebar {
       h("span", { class: "note-title" }, title, conflict ? h("span", { class: "badge" }, "conflict") : null),
       h("span", { class: "note-sub" }, sub),
     );
+    makeNoteDraggable(el, path); // drop it on a pane to open it there
+    return el;
   }
 
   render(): void {

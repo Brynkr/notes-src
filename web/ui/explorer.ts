@@ -6,6 +6,7 @@ import { pathInMode, type Mode } from "../../shared/modes.ts";
 import { baseName } from "../../shared/files.ts";
 import { api } from "../api.ts";
 import { h, icons, relativeTime } from "./dom.ts";
+import { makeNoteDraggable } from "./dnd.ts";
 
 export interface ExplorerDeps {
   mode: () => Mode;
@@ -133,8 +134,7 @@ export class Explorer {
         if (open) walk(dir.dirs.get(name)!, key, depth + 1);
       }
       for (const f of [...dir.files].sort((a, b) => baseName(a.path).localeCompare(baseName(b.path)))) {
-        rows.push(
-          h(
+        const row = h(
             "button",
             {
               type: "button",
@@ -147,8 +147,9 @@ export class Explorer {
             },
             h("span", { class: "tree-chevron", "aria-hidden": "true" }),
             h("span", { class: "tree-name" }, baseName(f.path)),
-          ),
-        );
+          );
+        makeNoteDraggable(row, f.path);
+        rows.push(row);
       }
     };
     walk(root, "", 0);

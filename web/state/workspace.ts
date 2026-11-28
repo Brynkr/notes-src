@@ -188,6 +188,17 @@ export class Workspace {
     this.commit(true);
   }
 
+  /** Swap two panes' places in the layout (dragging a pane by its title bar). */
+  swap(a: string, b: string): void {
+    const panes = [...this.state.panes];
+    const i = panes.findIndex((p) => p.id === a);
+    const j = panes.findIndex((p) => p.id === b);
+    if (i < 0 || j < 0 || i === j) return;
+    [panes[i], panes[j]] = [panes[j], panes[i]];
+    this.state = { ...this.state, panes, activePaneId: a };
+    this.commit(true);
+  }
+
   /** A note moved: every pane showing it follows. */
   renamed(from: string, to: string): void {
     if (!this.state.panes.some((p) => p.notePath === from)) return;

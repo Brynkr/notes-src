@@ -2,7 +2,7 @@
 // pop-out panel: themes first, then fonts, text, layout and editor options.
 // Every change applies immediately and is remembered on this device.
 
-import { FONTS, type Appearance, type AppearanceStore, type EditorFont } from "../appearance/prefs.ts";
+import { CURSORS, FONTS, type Appearance, type CursorStyle, type AppearanceStore, type EditorFont } from "../appearance/prefs.ts";
 import { SYSTEM_THEME, THEMES, type Theme } from "../appearance/themes.ts";
 import { h, icons, isMac, modKey } from "./dom.ts";
 
@@ -231,6 +231,13 @@ export class AppearancePanel {
         this.switchRow("Line numbers", a.lineNumbers, (v) => this.store.set({ lineNumbers: v })),
         this.switchRow("Highlight the current line", a.activeLine, (v) => this.store.set({ activeLine: v })),
         this.switchRow("Spell check", a.spellcheck, (v) => this.store.set({ spellcheck: v })),
+        this.segmented(
+          "Cursor",
+          a.cursor,
+          (Object.keys(CURSORS) as CursorStyle[]).map((value) => ({ value, label: CURSORS[value] })),
+          (v) => this.store.set({ cursor: v }),
+        ),
+        this.switchRow("Blinking cursor", a.cursorBlink, (v) => this.store.set({ cursorBlink: v })),
         this.switchRow("Animations", a.motion, (v) => this.store.set({ motion: v })),
       ),
       h(

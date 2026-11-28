@@ -43,6 +43,9 @@ try {
     check(b.readUInt16LE(pe + 24 + 68) === 2, "exe is a windowed app (no console)");
   }
 
+  // Something already on the port (e.g. an exe left by an interrupted run) would answer instead.
+  if (await api("GET", "/api/info").catch(() => null)) throw new Error(`port ${PORT} is already in use; stop whatever is running there and try again`);
+
   // Like a double-click: no command.
   await run(["--port", String(PORT), "--no-window"]);
   started = true;
@@ -59,7 +62,7 @@ try {
   await api("POST", "/api/notes", { title: "Hello from the exe" });
   const status = await api("POST", "/api/sync", {});
   check(status.state === "synced", `sync state is synced (got ${status.state}${status.message ? `: ${status.message}` : ""})`);
-  check(/hello-from-the-exe/.test(git("-C", remote, "ls-tree", "--name-only", "main")), "note pushed to the remote");
+  check(/^Home\/\d{8}-\d{6}-hello-from-the-exe\.md$/m.test(git("-C", remote, "ls-tree", "-r", "--name-only", "main")), "note pushed to the remote (in Home/)");
 
   await run(["stop", "--port", String(PORT)]);
   const gone = await waitFor(async () => ((await api("GET", "/api/info").catch(() => null)) ? null : true), 15_000);
@@ -69,7 +72,9 @@ try {
 } catch (err) {
   const log = path.join(tmp, "portable", "Notes-data", "data", "notes-app.log");
   if (fs.existsSync(log)) console.error(`--- notes-app.log ---\n${fs.readFileSync(log, "utf8")}`);
-  fail(err.message);
+  // Not fail(): that exits at once and would skip stopping the exe below.
+  console.error(err.message);
+  process.exitCode = 1;
 } finally {
   if (started) await run(["stop", "--port", String(PORT)]);
   try {
