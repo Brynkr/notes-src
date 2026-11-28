@@ -36,6 +36,7 @@ import type {
 import { isLoopback, verifyPassword } from "./config.ts";
 import { BadPath, Changed, Exists, NotFound, TooLarge, type NoteStore } from "./notes.ts";
 import { FolderError, parseOutsidePath, type OutsideFolders } from "./folders.ts";
+import { ProjectGitError } from "./projectgit.ts";
 import type { SearchIndex } from "./search.ts";
 import { SettingsError } from "./settings.ts";
 
@@ -275,6 +276,26 @@ export function createApp(ctx: AppContext) {
         const files = await outside().store(id).files();
         return send(res, 200, files.map((f) => ({ ...f, path: `@${id}/${f.path}` })));
       }
+      case "GET /api/outside/git":
+        return send(res, 200, await outside().gitStatus(url.searchParams.get("id") ?? ""));
+      case "POST /api/outside/git/commit": {
+        const body = await readJson<{ id?: string; message?: string; paths?: unknown }>(req);
+        const id = String(body.id ?? "");
+        const rels = (Array.isArray(body.paths) ? body.paths : []).map((p) => {
+          const o = parseOutsidePath(String(p));
+          if (!o || o.id !== id) throw new HttpError(400, `Not a file in that folder: ${String(p)}`);
+          return o.rel;
+        });
+        const commit = await outside().commit(id, String(body.message ?? ""), rels);
+        return send(res, 200, { commit, status: await outside().gitStatus(id) });
+      }
+      case "POST /api/outside/git/pull":
+      case "POST /api/outside/git/push": {
+        const body = await readJson<{ id?: string }>(req);
+        const id = String(body.id ?? "");
+        const message = route.endsWith("/pull") ? await outside().pull(id) : await outside().push(id);
+        return send(res, 200, { message, status: await outside().gitStatus(id) });
+      }
       case "GET /api/outside/folders": {
         const id = url.searchParams.get("id") ?? "";
         return send(res, 200, (await outside().store(id).folders()).map((p) => `@${id}/${p}`));
@@ -305,6 +326,14 @@ export function createApp(ctx: AppContext) {
         return send(res, 200, await r.commits(modeParam(url), limit));
       }
       case "GET /api/git/file": {
+        const op = parseOutsidePath(url.searchParams.get("path") ?? "");
+        if (op) {
+          // A project folder's own repository: only HEAD (the "not committed yet" diff).
+          if ((url.searchParams.get("commit") ?? "") !== "HEAD") throw new HttpError(400, "Only HEAD is available for outside folders");
+          const t = await outside().gitFileAtHead(op.id, op.rel);
+          if (t === null) throw new HttpError(404, "That file isn't committed yet.");
+          return send(res, 200, { text: t });
+        }
         const r = rt();
         if (!r.fileAt) throw new HttpError(404, "Not found");
         let text: string | null;
@@ -316,6 +345,34 @@ export function createApp(ctx: AppContext) {
         }
         if (text === null) throw new HttpError(404, "That file isn't in that commit.");
         return send(res, 200, { text });
+      }
+      case "POST /api/images": {
+        // Raw image bytes (the browser has already shrunk it); ?note= is the note it goes in.
+        const r = rt();
+        const mime = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+        const LIMIT = 6 * 1024 * 1024;
+        const tooBig = () => new HttpError(413, "Images are limited to 5 MB.");
+        if (Number(req.headers["content-length"] ?? 0) > LIMIT) {
+          req.resume(); // drain, so the client gets this answer rather than a reset connection
+          throw tooBig();
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += (chunk as Buffer).length;
+          if (size <= LIMIT) chunks.push(chunk as Buffer); // past the limit: keep reading, keep nothing
+        }
+        if (size > LIMIT) throw tooBig();
+        const saved = await r.store.saveImage(url.searchParams.get("note") ?? "", Buffer.concat(chunks), mime);
+        r.saved([]); // the next sync commits it
+        return send(res, 201, saved);
+      }
+      case "GET /api/file": {
+        // An image embedded in a note. Names never change, so it can be cached for good.
+        const { bytes, mime } = await rt().store.readImage(url.searchParams.get("path") ?? "");
+        res.writeHead(200, { "Content-Type": mime, "Content-Length": bytes.length, "Cache-Control": "private, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff" });
+        res.end(bytes);
+        return;
       }
       case "GET /api/note": {
         const t = target(url.searchParams.get("path") ?? "");
@@ -561,7 +618,7 @@ export function createApp(ctx: AppContext) {
         return;
       }
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      if (err instanceof BadPath || err instanceof SettingsError || err instanceof FolderError) return send(res, 400, { error: err.message });
+      if (err instanceof BadPath || err instanceof SettingsError || err instanceof FolderError || err instanceof ProjectGitError) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
       if (err instanceof Changed || err instanceof Exists) return send(res, 409, { error: err.message });
       if (err instanceof TooLarge) return send(res, 413, { error: err.message });

@@ -17,6 +17,8 @@ import type { ServerEvent } from "../shared/types.ts";
 import { Queue } from "./git.ts";
 import { NoteStore } from "./notes.ts";
 import { NoteWatcher } from "./watcher.ts";
+import { ProjectGit } from "./projectgit.ts";
+import type { ProjectGitStatus } from "../shared/types.ts";
 
 export type { OutsideFolder } from "../shared/types.ts";
 import type { OutsideFolder } from "../shared/types.ts";
@@ -24,6 +26,8 @@ import type { OutsideFolder } from "../shared/types.ts";
 interface Entry extends OutsideFolder {
   store: NoteStore;
   watcher: NoteWatcher;
+  /** Git for the folder, if it's inside a git repository. */
+  git: Promise<ProjectGit | null>;
 }
 
 export class FolderError extends Error {}
@@ -71,6 +75,44 @@ export class OutsideFolders {
     const e = this.entries.get(id);
     if (!e) throw new FolderError("That outside folder isn't open in Notes any more.");
     return e.store;
+  }
+
+  private async gitFor(id: string): Promise<ProjectGit> {
+    const e = this.entries.get(id);
+    if (!e) throw new FolderError("That outside folder isn't open in Notes any more.");
+    const g = await e.git;
+    if (!g) throw new FolderError(`${e.name} isn't a git repository.`);
+    return g;
+  }
+
+  /** Branch, changes, ahead/behind; `repo: false` for a folder that isn't in a git repository. Paths are "@id/…". */
+  async gitStatus(id: string): Promise<ProjectGitStatus> {
+    const e = this.entries.get(id);
+    if (!e) throw new FolderError("That outside folder isn't open in Notes any more.");
+    const g = await e.git;
+    if (!g) return { id, repo: false, branch: null, upstream: null, ahead: 0, behind: 0, changes: [] };
+    const s = await g.status();
+    return { ...s, id, changes: s.changes.map((c) => ({ ...c, path: `@${id}/${c.path}` })) };
+  }
+
+  async gitFileAtHead(id: string, rel: string): Promise<string | null> {
+    this.store(id).resolve(rel); // validates the path
+    return (await this.gitFor(id)).fileAtHead(rel);
+  }
+
+  async commit(id: string, message: string, rels: string[]): Promise<string> {
+    for (const r of rels) this.store(id).resolve(r);
+    return (await this.gitFor(id)).commit(message, rels);
+  }
+
+  async pull(id: string): Promise<string> {
+    const msg = await (await this.gitFor(id)).pull();
+    void this.store(id).scan(); // pulled files: tell open panes now
+    return msg;
+  }
+
+  async push(id: string): Promise<string> {
+    return (await this.gitFor(id)).push();
   }
 
   /** Add a folder by absolute path. Refuses roots, the home folder itself, and anything overlapping the notes folder. */
@@ -131,7 +173,7 @@ export class OutsideFolders {
       for (const p of paths) this.opts.onEvent({ type: "note-deleted", path: at(p) });
       this.opts.onEvent({ type: "notes-changed" });
     });
-    const e: Entry = { id, name: path.basename(abs), path: abs, store, watcher };
+    const e: Entry = { id, name: path.basename(abs), path: abs, store, watcher, git: ProjectGit.create(abs).catch(() => null) };
     this.entries.set(id, e);
     void store.scan().then(() => watcher.start());
     return e;

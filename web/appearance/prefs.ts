@@ -2,7 +2,7 @@
 // density, editor options and text zoom. Saved per device (localStorage),
 // applied as CSS variables and data attributes on <html>.
 
-import { DARK_DEFAULT, LIGHT_DEFAULT, SYSTEM_THEME, themeById, type Theme } from "./themes.ts";
+import { colorblindColors, DARK_DEFAULT, LIGHT_DEFAULT, SYSTEM_THEME, themeById, type Theme } from "./themes.ts";
 
 export const FONTS = {
   serif: { name: "Book serif", stack: 'Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif' },
@@ -16,6 +16,7 @@ export type EditorFont = keyof typeof FONTS;
 export const LINE_HEIGHTS = { compact: 1.45, normal: 1.65, relaxed: 1.9 } as const;
 export const WIDTHS = { narrow: "60ch", normal: "74ch", wide: "96ch", full: "none" } as const;
 export const RADII = {
+  sharp: ["0px", "0px", "0px"],
   square: ["2px", "3px", "4px"],
   soft: ["6px", "8px", "14px"],
   round: ["10px", "14px", "22px"],
@@ -40,6 +41,16 @@ export interface Appearance {
   motion: boolean;
   cursor: CursorStyle;
   cursorBlink: boolean;
+  /** Status colours that don't rely on red vs green (blue / vermillion / purple). */
+  colorblind: boolean;
+  /** Soft drop shadows on dialogs, menus and pop-outs (off: plain borders). */
+  shadows: boolean;
+  /** Section labels in spaced capitals ("RECENT COMMITS") rather than plain text. */
+  capsLabels: boolean;
+  /** Selected and hovered items tinted with the accent colour (off: neutral grey, bold text). */
+  tints: boolean;
+  /** IDE mode's minimap down the right of each editor. */
+  minimap: boolean;
   /** Text zoom for notes, 0.7–2. */
   zoom: number;
 }
@@ -59,6 +70,11 @@ export const DEFAULTS: Appearance = {
   motion: true,
   cursor: "line",
   cursorBlink: true,
+  colorblind: false,
+  shadows: true,
+  capsLabels: true,
+  tints: true,
+  minimap: true,
   zoom: 1,
 };
 
@@ -92,6 +108,11 @@ export function validate(raw: unknown): Appearance {
     motion: typeof r.motion === "boolean" ? r.motion : d.motion,
     cursor: oneOf(r.cursor, Object.keys(CURSORS) as CursorStyle[], d.cursor),
     cursorBlink: typeof r.cursorBlink === "boolean" ? r.cursorBlink : d.cursorBlink,
+    colorblind: typeof r.colorblind === "boolean" ? r.colorblind : d.colorblind,
+    shadows: typeof r.shadows === "boolean" ? r.shadows : d.shadows,
+    capsLabels: typeof r.capsLabels === "boolean" ? r.capsLabels : d.capsLabels,
+    tints: typeof r.tints === "boolean" ? r.tints : d.tints,
+    minimap: typeof r.minimap === "boolean" ? r.minimap : d.minimap,
     zoom: typeof r.zoom === "number" && Number.isFinite(r.zoom) ? clampZoom(r.zoom) : d.zoom,
   };
 }
@@ -153,7 +174,7 @@ export class AppearanceStore {
     const a = this.value;
     const root = document.documentElement;
     const t = this.resolvedTheme();
-    const c = t.colors;
+    const c = a.colorblind ? { ...t.colors, ...colorblindColors(t) } : t.colors;
     const vars: Record<string, string> = {
       "--bg": c.bg,
       "--panel": c.panel,
@@ -188,6 +209,11 @@ export class AppearanceStore {
     root.dataset.motion = a.motion ? "on" : "off";
     root.dataset.cursor = a.cursor;
     root.dataset.cursorBlink = a.cursorBlink ? "on" : "off";
+    root.dataset.colorblind = a.colorblind ? "on" : "off";
+    root.dataset.shadows = a.shadows ? "on" : "off";
+    root.dataset.labels = a.capsLabels ? "caps" : "plain";
+    root.dataset.tints = a.tints ? "on" : "off";
+    root.dataset.corners = a.corners;
     for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
       meta.content = c.bg;
       meta.removeAttribute("media");

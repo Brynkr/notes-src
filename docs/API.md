@@ -52,6 +52,10 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `DELETE /api/outside?id=I` | | forget a folder (its files stay where they are) |
 | `GET /api/outside/files?id=I` | | like `/api/files`, with paths `@I/…` |
 | `GET /api/outside/folders?id=I` | | like `/api/folders`, with paths `@I/…` |
+| `GET /api/outside/git?id=I` | | `{ id, repo, branch, upstream, ahead, behind, changes: [{ path, status }] }` for a folder inside a git repository (`repo: false` otherwise) |
+| `POST /api/outside/git/commit` | `{ id, message, paths }` | `{ commit, status }`: commits exactly those `@I/…` files as they are on disk |
+| `POST /api/outside/git/pull` | `{ id }` | `{ message, status }`: fast-forward only. If the branches have diverged it answers `400` and changes nothing |
+| `POST /api/outside/git/push` | `{ id }` | `{ message, status }`: never forced. Sets the upstream on a first push |
 | `GET /api/git/changes[?mode=home\|work]` | | `[{ path, status }]`: files changed since the last commit; `status` is `A`, `M` or `D` |
 | `GET /api/git/commits[?mode=home\|work&limit=N]` | | `[{ commit, parent, timeMs, machine, message, files: [{ path, status }] }]`: recent commits touching the notes folder, newest first (default 50) |
 | `GET /api/git/file?commit=C&path=P` | | `{ text }` of P at commit C (a hash or `HEAD`); `404` if it wasn't there |

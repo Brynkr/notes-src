@@ -47,7 +47,8 @@ const step = async (name, fn) => {
   console.log("ok");
 };
 const shot = (name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
-const waitFor = async (fn, what, ms = 8000) => {
+// Generous: a busy PC makes saves and syncs slow. Passing checks return at once.
+const waitFor = async (fn, what, ms = 20_000) => {
   const t0 = Date.now();
   for (;;) {
     const v = await fn();

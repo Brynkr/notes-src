@@ -78,3 +78,19 @@ export function baseName(path: string): string {
 
 /** Folders never walked: dependency and build caches that can hold thousands of files. */
 export const SKIP_DIRS = new Set(["node_modules", "__pycache__", "venv", "target"]);
+
+/** Images that can be embedded in notes (pasted images are stored as WebP). Extension → MIME type. */
+export const IMAGE_TYPES: Record<string, string> = {
+  webp: "image/webp",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+};
+
+export function isImagePath(path: string): boolean {
+  return Object.hasOwn(IMAGE_TYPES, extOf(path));
+}
+
+/** Images are kept small (pasted ones are shrunk first); bigger ones wouldn't sync anyway. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;

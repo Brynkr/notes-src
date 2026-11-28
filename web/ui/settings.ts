@@ -186,6 +186,9 @@ export class SettingsDialog {
       h("section", {}, h("h3", {}, "This machine"),
         row("Name", this.bind("machineName", input({ value: s.machineName })), "Shown in sync history and on conflict copies."),
       ),
+      h("section", {}, h("h3", {}, "Links"),
+        row("Jama address", this.bind("jamaUrl", input({ value: s.jamaUrl, placeholder: "https://yourcompany.jamacloud.com" })), "Jama IDs in your notes (like PROJ-REQ-123 or GID-4567) become links to Jama's search. Ctrl+click to open. Leave empty to turn off."),
+      ),
       h("section", {}, h("h3", {}, "Access"),
         h("div", { class: "grid-2" },
           row("Who can connect", this.bind("host", hostSel), cliNote("host")),
@@ -227,6 +230,7 @@ export class SettingsDialog {
     if (str("branch") !== s.branch) p.branch = str("branch");
     if (str("remote") !== s.remote) p.remote = str("remote");
     if (str("machineName") !== s.machineName) p.machineName = str("machineName");
+    if (str("jamaUrl") !== s.jamaUrl) p.jamaUrl = str("jamaUrl");
     const host = (val("host") as HTMLSelectElement).value;
     if (host !== (s.host === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1")) p.host = host;
     if (Number(str("port")) !== s.port) p.port = Number(str("port"));

@@ -38,12 +38,15 @@ export class Sidebar {
   /** What the "new" box makes, and where (a full folder path ending in "/"). */
   private newKind: "note" | "file" | "folder" | "outside" = "note";
   private newBase = "";
+  private blurTimer: ReturnType<typeof setTimeout> | null = null;
   private notes: NoteMeta[] = [];
   private hits: SearchHit[] | null = null;
   private activePath: string | null = null;
   private cursor = -1;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private searchSeq = 0;
+  /** What the list last drew; refreshes that change nothing visible skip the rebuild. */
+  private drawn = "";
   private readonly deps: SidebarDeps;
 
   constructor(deps: SidebarDeps) {
@@ -65,7 +68,8 @@ export class Sidebar {
       onkeydown: (e: KeyboardEvent) => {
         if (e.key === "Escape") this.hideNew();
       },
-      onblur: () => setTimeout(() => this.hideNew(), 150),
+      // Hide when focus moves elsewhere (unless the box is reopened first: see showNew).
+      onblur: () => (this.blurTimer = setTimeout(() => this.hideNew(), 150)),
     });
     this.newForm = h(
       "form",
@@ -98,12 +102,13 @@ export class Sidebar {
       h(
         "div",
         { class: "sidebar-head" },
+        // Top-left: hide the note list (the same spot shows it again; see the top bar).
+        h("button", { class: "icon-btn sidebar-hide", title: "Hide the note list", "aria-label": "Hide the note list", html: icons.sidebar, onclick: () => this.deps.collapse() }),
         h("span", { class: "brand" }, "Notes"),
         this.countEl,
         h("button", { class: "icon-btn", title: "Today's note (Alt+D)", "aria-label": "Today's note", html: icons.today, onclick: () => this.deps.today() }),
         h("button", { class: "icon-btn", title: "Trash", "aria-label": "Trash", html: icons.trash, onclick: () => this.deps.showTrash() }),
-        h("button", { class: "icon-btn", title: `New note (Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
-        h("button", { class: "icon-btn hide-wide", title: "Hide sidebar", "aria-label": "Hide sidebar", html: icons.sidebar, onclick: () => this.deps.collapse() }),
+        h("button", { class: "icon-btn", title: `New note (${modKey}+N or Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
       ),
       h("div", { class: "segmented mode-switch", role: "group", "aria-label": "Mode" }, ...this.modeButtons),
       (this.searchWrap = h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput)),
@@ -170,6 +175,9 @@ export class Sidebar {
     }[this.newKind];
     this.newInput.placeholder = text[0];
     this.newInput.setAttribute("aria-label", text[1]);
+    // A pending "hide on blur" from the last use must not close the box we're opening now.
+    if (this.blurTimer) clearTimeout(this.blurTimer);
+    this.blurTimer = null;
     this.newForm.hidden = false;
     this.newInput.value = "";
     this.newInput.focus();
@@ -244,6 +252,9 @@ export class Sidebar {
   }
 
   render(): void {
+    const drawn = JSON.stringify([this.hits, this.cursor, this.activePath, this.notes.map((n) => [n.path, n.title, n.conflict, Math.floor(n.modifiedMs / 60000)])]);
+    if (drawn === this.drawn && this.list.childElementCount) return;
+    this.drawn = drawn;
     this.list.replaceChildren();
     if (this.hits !== null) {
       if (!this.hits.length) {

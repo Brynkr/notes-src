@@ -344,3 +344,70 @@ describe("IDE mode: text and code files", () => {
     assert.deepEqual(await store.moveIntoModes(), [], "code files are not moved into Home/");
   });
 });
+
+describe("images in notes", () => {
+  const png = Buffer.from("89504e470d0a1a0a", "hex");
+  test("saveImage stores beside the note's mode folder and returns Markdown relative to the note", async () => {
+    const a = await store.saveImage("Work/proj/20261128-090000-plan.md", png, "image/webp");
+    assert.match(a.path, /^Work\/images\/20261127-090507-[0-9a-f]{6}\.webp$/);
+    assert.equal(a.markdown, `![](../images/${a.path.slice("Work/images/".length)})`);
+    assert.deepEqual(fs.readFileSync(path.join(dir, ...a.path.split("/"))), png);
+    const b = await store.saveImage("Home/20261128-090000-x.md", png, "image/png");
+    assert.match(b.markdown, /^!\[\]\(images\/20261127-090507-[0-9a-f]{6}\.png\)$/);
+    const root = await store.saveImage("old.md", png, "image/jpeg");
+    assert.match(root.path, /^Home\/images\/.*\.jpg$/, "notes outside a mode folder: Home/");
+    const back = await store.readImage(a.path);
+    assert.equal(back.mime, "image/webp");
+    assert.deepEqual(back.bytes, png);
+  });
+
+  test("refuses other types, empty and oversized images, bad note paths and path tricks", async () => {
+    await assert.rejects(store.saveImage("Home/a.md", png, "image/svg+xml"), /WebP, PNG, JPEG or GIF/);
+    await assert.rejects(store.saveImage("Home/a.md", Buffer.alloc(0), "image/png"), /Empty/);
+    await assert.rejects(store.saveImage("Home/a.md", Buffer.alloc(5 * 1024 * 1024 + 1), "image/png"), /limited to 5 MB/);
+    await assert.rejects(store.saveImage("../a.md", png, "image/png"), /Invalid/);
+    await assert.rejects(store.readImage("../secret.png"), /Invalid/);
+    await assert.rejects(store.readImage("Home/notes.md"), /Not an image/);
+    await assert.rejects(store.readImage("Home/images/missing.webp"), /No such image/);
+  });
+
+  test("images aren't listed as notes or files", async () => {
+    await store.saveImage("Home/a.md", png, "image/webp");
+    assert.deepEqual(await store.files(), []);
+  });
+});
+
+describe("listing with a live watcher", () => {
+  test("list() uses what the store knows instead of re-walking; writes still show up", async () => {
+    const w = new NoteWatcher(store, { rescanMs: 0 });
+    w.start();
+    try {
+      assert.equal(store.watched, true);
+      await store.write("Home/a.md", "# A\n", null);
+      assert.deepEqual((await store.list()).map((n) => n.path), ["Home/a.md"], "own writes are known at once");
+      // An outside change arrives through the watcher, not a re-walk on every list().
+      fs.mkdirSync(path.join(dir, "Home"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "Home", "b.md"), "# B\n");
+      const t0 = Date.now();
+      while (!(await store.list()).some((n) => n.path === "Home/b.md")) {
+        if (Date.now() - t0 > 10_000) throw new Error("watcher never reported the new note");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } finally {
+      w.stop();
+    }
+    assert.equal(store.watched, false);
+  });
+
+  test("code files are listed without being read (size+mtime stand in for the hash until opened)", async () => {
+    fs.mkdirSync(path.join(dir, "Work"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "Work", "x.py"), "print(1)\n");
+    const f = (await store.files()).find((x) => x.path === "Work/x.py")!;
+    assert.match(f.hash, /^m:9:\d+$/);
+    const r = await store.read("Work/x.py");
+    assert.equal(r.hash, sha256("print(1)\n"));
+    // Saving with the real hash works (no false conflict).
+    const saved = await store.write("Work/x.py", "print(2)\n", r.hash);
+    assert.equal(saved.conflictCopy, undefined);
+  });
+});

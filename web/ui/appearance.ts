@@ -17,9 +17,20 @@ export class TopBar {
 
   /** Shows whether IDE mode is on. */
   readonly ideBtn: HTMLButtonElement;
+  /** IDE mode only: show/hide the minimap. */
+  readonly minimapBtn: HTMLButtonElement;
 
   constructor(store: AppearanceStore, opts: { goto: () => void; ide: { value: boolean; set(on: boolean): void; onChange(fn: (on: boolean) => void): void } }) {
     this.store = store;
+    this.minimapBtn = h("button", {
+      class: "icon-btn minimap-btn",
+      title: "Minimap: a map of the text down the right-hand side (IDE mode)",
+      "aria-label": "Minimap",
+      "aria-pressed": String(store.value.minimap),
+      html: icons.minimap,
+      onclick: () => store.set({ minimap: !store.value.minimap }),
+    });
+    store.onChange((a) => this.minimapBtn.setAttribute("aria-pressed", String(a.minimap)));
     this.ideBtn = h("button", {
       class: "icon-btn ide-btn",
       title: "IDE mode: file tree, code highlighting, git changes",
@@ -63,6 +74,7 @@ export class TopBar {
         this.zoomLabel,
         h("button", { class: "icon-btn", title: `Larger text (${modKey}++)`, "aria-label": "Larger text", html: icons.plus, onclick: () => store.zoomBy(ZOOM_STEP) }),
       ),
+      this.minimapBtn,
       this.ideBtn,
       h("div", { class: "appearance-anchor" }, this.appearanceBtn, this.panel.el),
     );
@@ -154,6 +166,7 @@ export class AppearancePanel {
         this.themeGrid(THEMES.filter((t) => !t.dark), a.theme),
         h("div", { class: "ap-subhead" }, "Dark"),
         this.themeGrid(THEMES.filter((t) => t.dark), a.theme),
+        this.switchRow("Colour-blind friendly colours", a.colorblind, (v) => this.store.set({ colorblind: v })),
       ),
       this.section(
         "Font",
@@ -216,10 +229,14 @@ export class AppearancePanel {
           { value: "cards", label: "Cards" },
         ], (v) => this.store.set({ borders: v })),
         this.segmented("Corners", a.corners, [
+          { value: "sharp", label: "Sharp" },
           { value: "square", label: "Square" },
           { value: "soft", label: "Soft" },
           { value: "round", label: "Round" },
         ], (v) => this.store.set({ corners: v })),
+        this.switchRow("Shadows", a.shadows, (v) => this.store.set({ shadows: v })),
+        this.switchRow("Tinted highlights", a.tints, (v) => this.store.set({ tints: v })),
+        this.switchRow("Capital-letter section labels", a.capsLabels, (v) => this.store.set({ capsLabels: v })),
         this.segmented("Spacing", a.density, [
           { value: "compact", label: "Compact" },
           { value: "comfortable", label: "Comfortable" },

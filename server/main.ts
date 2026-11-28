@@ -37,6 +37,7 @@ import {
   testRemote,
   validateFolder,
   validateHosts,
+  validateJamaUrl,
   validateMachineName,
   validateName,
   validateNotesDir,
@@ -166,6 +167,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
       defaultRepoPath: defaultRepoPath(),
       platform: process.platform,
       local: !exposed(),
+      jamaUrl: cfg.jamaUrl ?? "",
     };
   }
 
@@ -189,6 +191,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
       version: VERSION,
       fromCommandLine: Object.keys(cli.overrides),
       sshPublicKey: readSshPublicKey(),
+      jamaUrl: cfg.jamaUrl ?? "",
     };
   }
 
@@ -213,6 +216,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
       if (patch.host !== undefined) set("host", String(patch.host).trim() || "127.0.0.1");
       if (patch.port !== undefined) set("port", validateSeconds(patch.port, "Port", 1024, 65_535));
       if (patch.allowedHosts !== undefined) set("allowedHosts", validateHosts(patch.allowedHosts));
+      if (patch.jamaUrl !== undefined) set("jamaUrl", validateJamaUrl(patch.jamaUrl));
       if (patch.remoteUrl !== undefined && patch.remoteUrl !== null && patch.remoteUrl !== "") validateRemoteUrl(patch.remoteUrl);
 
       const nowExposed = !isLoopback(next.host) || next.allowedHosts.length > 0;
@@ -238,7 +242,8 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
         await reconfigure({ ...next, host: cfg.host, port: cfg.port });
         if (patch.remoteUrl !== undefined && runtime) await setRemoteUrl(runtime.repoRoot, next.remote, patch.remoteUrl);
       } else {
-        cfg = { ...cfg, allowedHosts: next.allowedHosts };
+        // Settings that apply without reopening the notes folder.
+        cfg = { ...cfg, allowedHosts: next.allowedHosts, jamaUrl: next.jamaUrl };
         if (remoteChanged && runtime) void runtime.syncNow();
       }
       const message = setupError

@@ -8,6 +8,7 @@ import type {
   NoteContent,
   NoteMeta,
   OutsideFolder,
+  ProjectGitStatus,
   RemoteTestResult,
   SaveRequest,
   SaveResponse,
@@ -79,6 +80,13 @@ export const api = {
   /** Notes and text/code files (IDE mode), sorted by path. */
   files: (mode: Mode) => call<(NoteMeta & { size: number })[]>("GET", `/api/files?mode=${mode}`),
   createFile: (path: string) => call<NoteContent>("POST", "/api/files", { path }),
+  /** Upload an image (already shrunk) for a note; returns its path and the Markdown to insert. */
+  uploadImage: async (note: string, image: Blob): Promise<{ path: string; markdown: string }> => {
+    const res = await fetch(`/api/images?note=${q(note)}`, { method: "POST", headers: { "Content-Type": image.type, "X-Notes-App": "1" }, body: image });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText);
+    return data;
+  },
   /** Folders (including empty ones) of a mode. */
   folders: (mode: Mode) => call<string[]>("GET", `/api/folders?mode=${mode}`),
   createFolder: (path: string) => call<{ path: string }>("POST", "/api/folders", { path }),
@@ -88,6 +96,12 @@ export const api = {
   removeOutside: (id: string) => call<{ ok: true }>("DELETE", `/api/outside?id=${q(id)}`),
   outsideFiles: (id: string) => call<(NoteMeta & { size: number })[]>("GET", `/api/outside/files?id=${q(id)}`),
   outsideFolders: (id: string) => call<string[]>("GET", `/api/outside/folders?id=${q(id)}`),
+  /** Git for an outside folder that's a repository (repo: false otherwise). */
+  outsideGit: (id: string) => call<ProjectGitStatus>("GET", `/api/outside/git?id=${q(id)}`),
+  outsideCommit: (id: string, message: string, paths: string[]) =>
+    call<{ commit: string; status: ProjectGitStatus }>("POST", "/api/outside/git/commit", { id, message, paths }),
+  outsidePull: (id: string) => call<{ message: string; status: ProjectGitStatus }>("POST", "/api/outside/git/pull", { id }),
+  outsidePush: (id: string) => call<{ message: string; status: ProjectGitStatus }>("POST", "/api/outside/git/push", { id }),
   gitChanges: (mode: Mode) => call<ChangeEntry[]>("GET", `/api/git/changes?mode=${mode}`),
   gitCommits: (mode: Mode, limit = 50) => call<CommitEntry[]>("GET", `/api/git/commits?mode=${mode}&limit=${limit}`),
   /** A file's text at a commit ("HEAD" or a hash); 404 if it wasn't there. */

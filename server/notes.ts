@@ -13,7 +13,7 @@ import type { Queue } from "./git.ts";
 import { extractTitle, parseTags, splitFrontMatter } from "../shared/markdown.ts";
 import { conflictCopyName, isConflictCopy } from "./sync.ts";
 import { MODE_FOLDER, modeFolderOf, type Mode } from "../shared/modes.ts";
-import { baseName, isNotePath, isTextFile, SKIP_DIRS } from "../shared/files.ts";
+import { baseName, IMAGE_TYPES, isImagePath, isNotePath, isTextFile, MAX_IMAGE_BYTES, SKIP_DIRS } from "../shared/files.ts";
 
 export { extractTitle, parseTags, splitFrontMatter };
 
@@ -67,13 +67,22 @@ export function metaFor(relPath: string, text: string, modifiedMs: number, hash:
  * notes nor text/code files (see shared/files.ts).
  */
 export function resolveNotePath(root: string, rel: string): string {
+  return resolveSafe(root, rel, isTextFile, "Only notes and text or code files can be opened here");
+}
+
+/** Like resolveNotePath, for images embedded in notes (webp, png, jpeg, gif). */
+export function resolveImagePath(root: string, rel: string): string {
+  return resolveSafe(root, rel, isImagePath, "Not an image");
+}
+
+function resolveSafe(root: string, rel: string, allowed: (p: string) => boolean, wrongType: string): string {
   if (typeof rel !== "string" || !rel || rel.length > 512) throw new BadPath("Invalid note path");
   if (rel.includes("\0") || rel.includes("\\")) throw new BadPath("Invalid note path");
   const norm = path.posix.normalize(rel);
   if (norm !== rel || path.posix.isAbsolute(norm) || /^[A-Za-z]:/.test(norm)) throw new BadPath("Invalid note path");
   const segs = norm.split("/");
   if (segs.some((s) => s === ".." || s === "." || s.startsWith("."))) throw new BadPath("Invalid note path");
-  if (!isTextFile(norm)) throw new BadPath("Only notes and text or code files can be opened here");
+  if (!allowed(norm)) throw new BadPath(wrongType);
   const abs = path.resolve(root, ...segs);
   if (!abs.startsWith(path.resolve(root) + path.sep)) throw new BadPath("Invalid note path");
   return abs;
@@ -124,6 +133,11 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
   private readonly machineName: string;
   private readonly now: () => Date;
   private readonly followMoves: boolean;
+  /**
+   * True while a NoteWatcher watches the folder live: `known` then stays current
+   * (watcher events plus our own writes), so listing needn't re-walk the disk.
+   */
+  watched = false;
   /** Last content we saw or wrote for each note. Used to ignore our own watcher events. */
   readonly known = new Map<string, Known>();
 
@@ -169,7 +183,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
         if (e.isDirectory()) {
           if (!SKIP_DIRS.has(e.name)) await visit(path.join(dirAbs, e.name), rel);
         } else if (e.isFile() && isTextFile(e.name)) {
-          if (isNotePath(e.name) || ((await fs.stat(path.join(dirAbs, e.name)).catch(() => null))?.size ?? Infinity) <= MAX_NOTE_BYTES) out.push(rel);
+          out.push(rel); // scan() leaves out code files over the size limit (one stat per file)
         }
       }
     };
@@ -209,6 +223,14 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
       seen.add(rel);
       const prev = this.known.get(rel);
       if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue;
+      if (!isNotePath(rel)) {
+        // Code and text files: no need to read them to list them (title = filename).
+        // Size + mtime stand in for the hash until the file is opened or saved.
+        const hash = `m:${st.size}:${Math.round(st.mtimeMs)}`;
+        this.known.set(rel, { hash, mtimeMs: st.mtimeMs, size: st.size, meta: metaFor(rel, "", st.mtimeMs, hash) });
+        if (!prev || prev.hash !== hash) changed.push(rel);
+        continue;
+      }
       const buf = await fs.readFile(abs).catch(() => null);
       if (!buf) continue;
       const hash = sha256(buf);
@@ -229,15 +251,20 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     return { changed, deleted };
   }
 
+  /** Re-walk the disk, unless a live watcher already keeps `known` current. */
+  private async freshen(): Promise<void> {
+    if (!this.watched) await this.scan();
+  }
+
   /** Notes (Markdown files), newest first. */
   async list(): Promise<NoteMeta[]> {
-    await this.scan();
+    await this.freshen();
     return [...this.known.values()].map((k) => k.meta).filter((m) => isNotePath(m.path)).sort((a, b) => b.modifiedMs - a.modifiedMs);
   }
 
   /** Every file the app opens (notes and text/code files), by path, with sizes. */
   async files(): Promise<(NoteMeta & { size: number })[]> {
-    await this.scan();
+    await this.freshen();
     return [...this.known.values()].map((k) => ({ ...k.meta, size: k.size })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   }
 
@@ -247,6 +274,40 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     if (await exists(abs)) throw new Exists(`${rel} already exists`);
     const { hash } = await this.write(rel, "", null);
     return { path: rel, text: "", hash };
+  }
+
+  /**
+   * Save an image pasted into a note: "<mode folder>/images/<date-time>-<random>.<ext>"
+   * (Home/ for notes outside a mode folder). Returns its path and the Markdown
+   * that embeds it, relative to the note. Written under the worktree lock, so
+   * sync never commits half an image.
+   */
+  async saveImage(noteRel: string, bytes: Buffer, mime: string): Promise<{ path: string; markdown: string }> {
+    this.resolve(noteRel); // validates the note path
+    const ext = Object.entries(IMAGE_TYPES).find(([, m]) => m === mime)?.[0];
+    if (!ext) throw new BadPath("Images must be WebP, PNG, JPEG or GIF");
+    if (!bytes.length) throw new BadPath("Empty image");
+    if (bytes.length > MAX_IMAGE_BYTES) throw new TooLarge(`This image is ${(bytes.length / 1048576).toFixed(1)} MB; images are limited to 5 MB.`);
+    const folder = `${MODE_FOLDER[modeFolderOf(noteRel) ?? "home"]}/images`;
+    const d = this.now();
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const rel = `${folder}/${stamp}-${randomBytes(3).toString("hex")}.${ext}`;
+    const abs = resolveImagePath(this.root, rel);
+    await this.lock.run(async () => {
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await atomicWrite(abs, bytes);
+    });
+    const fromNote = path.posix.relative(path.posix.dirname(noteRel), rel);
+    return { path: rel, markdown: `![](${fromNote})` };
+  }
+
+  /** An embedded image's bytes and type. */
+  async readImage(rel: string): Promise<{ bytes: Buffer; mime: string }> {
+    const abs = resolveImagePath(this.root, rel);
+    const bytes = await fs.readFile(abs).catch(() => {
+      throw new NotFound(`No such image: ${rel}`);
+    });
+    return { bytes, mime: IMAGE_TYPES[path.extname(rel).slice(1).toLowerCase()] };
   }
 
   /** Every folder under the root (same skips as walk), including empty ones, sorted. */

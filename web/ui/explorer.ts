@@ -2,11 +2,11 @@
 // outside folders below it), and a Changes view (uncommitted files, then
 // recent commits) that opens line diffs.
 
-import type { ChangeEntry, CommitEntry, NoteMeta, OutsideFolder } from "../../shared/types.ts";
+import type { ChangeEntry, CommitEntry, NoteMeta, OutsideFolder, ProjectGitStatus } from "../../shared/types.ts";
 import { MODE_FOLDER, pathInMode, type Mode } from "../../shared/modes.ts";
 import { baseName } from "../../shared/files.ts";
 import { api } from "../api.ts";
-import { h, icons, relativeTime } from "./dom.ts";
+import { h, icons, relativeTime, toast } from "./dom.ts";
 import { makeNoteDraggable } from "./dnd.ts";
 
 export interface ExplorerDeps {
@@ -67,6 +67,10 @@ export class Explorer {
   private openCommit: string | null = null;
   /** What the tree last drew, so refreshes that change nothing don't rebuild it (which would drop hovers and clicks). */
   private treeDrawn = "";
+  /** Per project folder: files the owner unticked, and the commit message being written. */
+  private readonly unticked = new Map<string, Set<string>>();
+  private readonly commitMsg = new Map<string, string>();
+  private busy: string | null = null;
   private readonly deps: ExplorerDeps;
 
   constructor(deps: ExplorerDeps) {
@@ -352,8 +356,15 @@ export class Explorer {
     const mode = this.deps.mode();
     let changes: ChangeEntry[];
     let commits: CommitEntry[];
+    let projects: { o: OutsideFolder; s: ProjectGitStatus }[] = [];
     try {
-      [changes, commits] = await Promise.all([api.gitChanges(mode), api.gitCommits(mode)]);
+      const outside = this.deps.local() ? this.outside : [];
+      const proj = Promise.all(outside.map((o) => api.outsideGit(o.id).then((s) => ({ o, s }), () => null)));
+      [changes, commits, projects] = await Promise.all([
+        api.gitChanges(mode),
+        api.gitCommits(mode),
+        proj.then((list) => list.filter((p): p is { o: OutsideFolder; s: ProjectGitStatus } => !!p && p.s.repo)),
+      ]);
     } catch (err) {
       if (seq === this.changesSeq) this.changesEl.replaceChildren(h("p", { class: "list-empty" }, `Couldn't read git history: ${(err as Error).message}`));
       return;
@@ -409,7 +420,118 @@ export class Explorer {
         }
       }
     }
+    for (const p of projects) out.push(...this.projectSection(p.o, p.s));
+    // Keep typing in a commit box across a redraw (saves refresh this view).
+    const focused = document.activeElement as HTMLInputElement | null;
+    const focusId = focused?.classList.contains("commit-msg") ? focused.dataset.id : null;
+    const caret = focusId ? focused!.selectionStart : null;
     this.changesEl.replaceChildren(...out);
+    if (focusId) {
+      const again = this.changesEl.querySelector<HTMLInputElement>(`.commit-msg[data-id="${focusId}"]`);
+      again?.focus();
+      if (again && caret !== null) again.setSelectionRange(caret, caret);
+    }
+  }
+
+  /** Git for one outside folder that's a repository: branch, pull/push, changed files to tick, commit. */
+  private projectSection(o: OutsideFolder, s: ProjectGitStatus): HTMLElement[] {
+    const off = this.unticked.get(o.id) ?? new Set<string>();
+    this.unticked.set(o.id, off);
+    const busy = this.busy === o.id;
+    const run = async (what: string, job: () => Promise<{ message?: string; commit?: string }>) => {
+      this.busy = o.id;
+      void this.refreshChanges();
+      try {
+        const r = await job();
+        toast(r.commit ? `Committed ${r.commit} in ${o.name}.` : `${o.name}: ${r.message}`, "info");
+      } catch (err) {
+        toast(`${what} failed in ${o.name}: ${(err as Error).message}`, "error");
+      } finally {
+        this.busy = null;
+        void this.refreshChanges();
+      }
+    };
+    const sync = [s.ahead ? `↑${s.ahead}` : "", s.behind ? `↓${s.behind}` : ""].filter(Boolean).join(" ");
+    const head = h(
+      "div",
+      { class: "project-head", "data-id": o.id },
+      h(
+        "h3",
+        { class: "changes-head project-title", title: `${o.path}${s.upstream ? ` · tracking ${s.upstream}` : " · no upstream yet"}` },
+        h("span", { class: "tree-icon", html: icons.folderLink }),
+        `${o.name} · ${s.branch ?? "(no branch)"}`,
+        sync ? h("span", { class: "project-sync" }, sync) : "",
+      ),
+      h("button", { type: "button", class: "btn btn-small project-pull", disabled: busy, title: "Pull (fast-forward only: never merges)", onclick: () => run("Pull", () => api.outsidePull(o.id)) }, "Pull"),
+      h("button", { type: "button", class: "btn btn-small project-push", disabled: busy, title: "Push (never forced)", onclick: () => run("Push", () => api.outsidePush(o.id)) }, "Push"),
+    );
+    const rows: HTMLElement[] = [head];
+    if (!s.changes.length) {
+      rows.push(h("p", { class: "changes-empty" }, "No changes to commit."));
+      return rows;
+    }
+    for (const c of s.changes) {
+      const box = h("input", {
+        type: "checkbox",
+        class: "check commit-pick",
+        checked: !off.has(c.path),
+        "aria-label": `Include ${c.path} in the commit`,
+        onchange: () => {
+          if (box.checked) off.delete(c.path);
+          else off.add(c.path);
+        },
+      }) as HTMLInputElement;
+      rows.push(
+        h(
+          "div",
+          { class: "change-line" },
+          box,
+          h(
+            "button",
+            {
+              type: "button",
+              class: "change-row",
+              "data-path": c.path,
+              title: `${STATUS_LABEL[c.status]}: ${c.path.slice(10)}`,
+              onclick: () =>
+                this.deps.showDiff({ path: c.path, status: c.status, title: `${o.name}, not committed yet`, before: c.status === "A" ? null : "HEAD", after: c.status === "D" ? null : "now" }),
+            },
+            h("span", { class: `change-status st-${c.status}` }, c.status),
+            h("span", { class: "change-path" }, c.path.slice(10)),
+          ),
+        ),
+      );
+    }
+    const msg = h("input", {
+      type: "text",
+      class: "commit-msg",
+      "data-id": o.id,
+      placeholder: "Commit message",
+      "aria-label": `Commit message for ${o.name}`,
+      value: this.commitMsg.get(o.id) ?? "",
+      oninput: () => this.commitMsg.set(o.id, msg.value),
+      onkeydown: (e: KeyboardEvent) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit();
+      },
+    }) as HTMLInputElement;
+    const commit = () => {
+      const paths = s.changes.map((c) => c.path).filter((p) => !off.has(p));
+      void run("Commit", async () => {
+        const r = await api.outsideCommit(o.id, msg.value, paths);
+        this.commitMsg.delete(o.id);
+        off.clear();
+        return r;
+      });
+    };
+    rows.push(
+      h(
+        "div",
+        { class: "commit-box" },
+        msg,
+        h("button", { type: "button", class: "btn btn-small btn-primary project-commit", disabled: busy, title: "Commit the ticked files (Ctrl+Enter)", onclick: commit }, "Commit"),
+      ),
+    );
+    return rows;
   }
 }
 

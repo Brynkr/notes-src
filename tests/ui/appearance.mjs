@@ -58,7 +58,7 @@ try {
     await openPanel();
     const sections = await page.$$eval(".ap-section h3", (els) => els.map((e) => e.textContent));
     assert.deepEqual(sections, ["Theme", "Font", "Text", "Layout", "Editor"], "themes first, fonts next");
-    assert.equal((await page.$$(".ap-theme")).length, 16);
+    assert.equal((await page.$$(".ap-theme")).length, 32);
     await page.screenshot({ path: path.join(SHOTS, "20-appearance-panel.png") });
   });
 
@@ -126,6 +126,42 @@ try {
     await page.keyboard.press("Escape");
     await page.waitForSelector(".appearance-panel[hidden]");
     await page.screenshot({ path: path.join(SHOTS, "21-cards-round-mono.png") });
+  });
+
+  await step("colour-blind colours: blue / vermillion / purple instead of green / red / amber", async () => {
+    await openPanel();
+    await page.click('.ap-theme[data-theme-id="paper"]');
+    const hue = (name) =>
+      page.evaluate((v) => {
+        const hex = getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const n = parseInt(hex.slice(1), 16);
+        const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((x) => x / 255);
+        const max = Math.max(r, g, b);
+        const d = max - Math.min(r, g, b);
+        if (!d) return 0;
+        const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+        return Math.round((h * 60 + 360) % 360);
+      }, name);
+    const okBefore = await hue("--ok");
+    assert.ok(okBefore > 90 && okBefore < 170, `ok starts green (${okBefore})`);
+    await page.$$eval(".ap-toggle", (els) => els.find((e) => e.textContent.includes("Colour-blind")).click());
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.colorblind), "on");
+    const [ok, bad, warn] = [await hue("--ok"), await hue("--bad"), await hue("--warn")];
+    assert.ok(ok > 190 && ok < 220, `ok is blue (${ok})`);
+    assert.ok(bad > 10 && bad < 35, `bad is vermillion (${bad})`);
+    assert.ok(warn > 300 && warn < 340, `warn is purple (${warn})`);
+    // Survives a theme change and a reload.
+    await page.click('.ap-theme[data-theme-id="aurora"]');
+    assert.ok((await hue("--ok")) > 190, "still blue on a dark theme");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".pane .cm-content");
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.colorblind), "on");
+    await openPanel();
+    await page.screenshot({ path: path.join(SHOTS, "31-colorblind-panel.png") });
+    await page.$$eval(".ap-toggle", (els) => els.find((e) => e.textContent.includes("Colour-blind")).click());
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.colorblind), "off");
+    await page.click('.ap-theme[data-theme-id="paper"]');
+    await page.keyboard.press("Escape");
   });
 
   await step("cursor: blinking can be turned off, and the shape changed", async () => {

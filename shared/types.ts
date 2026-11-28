@@ -48,6 +48,19 @@ export interface ChangeEntry {
   status: "A" | "M" | "D";
 }
 
+/** Git for an IDE outside folder that is a git repository (repo: false otherwise). Paths are "@<id>/…". */
+export interface ProjectGitStatus {
+  id: string;
+  repo: boolean;
+  branch: string | null;
+  /** e.g. "origin/main"; null when the branch tracks nothing. */
+  upstream: string | null;
+  /** Commits to push / to pull (as of the last fetch). */
+  ahead: number;
+  behind: number;
+  changes: ChangeEntry[];
+}
+
 export interface CommitEntry {
   commit: string;
   /** First parent, for diffing; null for the first commit. */
@@ -120,6 +133,8 @@ export interface AppInfo {
   platform: string;
   /** True when this server only listens on this computer (desktop use). */
   local: boolean;
+  /** Jama Connect address for linking Jama IDs; "" when not set. */
+  jamaUrl: string;
 }
 
 export interface SettingsDto {
@@ -144,10 +159,11 @@ export interface SettingsDto {
   fromCommandLine: string[];
   /** This machine's SSH public key, to add to GitHub as a deploy key. */
   sshPublicKey: string | null;
+  jamaUrl: string;
 }
 
 export type SettingsPatch = Partial<
-  Pick<SettingsDto, "repoPath" | "notesDir" | "remote" | "branch" | "machineName" | "sync" | "syncIdleSeconds" | "syncIntervalSeconds" | "remoteUrl" | "host" | "port" | "allowedHosts">
+  Pick<SettingsDto, "repoPath" | "notesDir" | "remote" | "branch" | "machineName" | "sync" | "syncIdleSeconds" | "syncIntervalSeconds" | "remoteUrl" | "host" | "port" | "allowedHosts" | "jamaUrl">
 >;
 
 export interface SettingsResult {
