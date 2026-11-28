@@ -17,7 +17,17 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Release zip: the app is in "app" beside the installer folder. Source
+# checkout: it's the build output in "dist" (run "npm run build" first).
 $Source = Join-Path (Split-Path -Parent $Here) 'app'
+$FromSource = $false
+if (-not (Test-Path (Join-Path $Source 'server.js'))) {
+  $Dist = Join-Path (Split-Path -Parent $Here) 'dist'
+  if ((Test-Path (Join-Path $Dist 'server.js')) -or (Test-Path (Join-Path (Split-Path -Parent $Here) 'package.json'))) {
+    $Source = $Dist
+    $FromSource = $true
+  }
+}
 $Dest = Join-Path $env:LOCALAPPDATA 'Programs\notes-app'
 $StartMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Notes.lnk'
 $StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Notes (background).lnk'
@@ -53,6 +63,7 @@ Write-Host ''
 Write-Host 'Installing Notes' -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $Source 'server.js'))) {
+  if ($FromSource) { throw "This is the source folder and the app isn't built yet. Run 'npm install' and 'npm run build' in $(Split-Path -Parent $Here), then run the installer again." }
   throw "Can't find the app files next to the installer ($Source). Extract the whole zip first."
 }
 
@@ -83,6 +94,8 @@ if (Test-Path (Join-Path $Dest 'server.js')) {
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Get-ChildItem $Dest -Exclude 'uninstall.ps1' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item -Recurse -Force (Join-Path $Source '*') $Dest
+# From a source checkout, dist\ also holds source maps; the release zip leaves them out.
+if ($FromSource) { Get-ChildItem $Dest -Recurse -Filter '*.map' | Remove-Item -Force }
 Copy-Item -Force (Join-Path $Here 'uninstall.ps1') $Dest
 Copy-Item -Force (Join-Path $Here 'assets\icon.ico') $Dest
 Say "Installed to $Dest"

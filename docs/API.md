@@ -23,13 +23,15 @@ Raspberry Pi (web UI + API) ──────git───┘
 - **Home and Work:** notes live in two top-level folders, `Home/` and `Work/` (the app's two modes). A note's mode is its first path segment, matched case-insensitively; anything else counts as Home. At startup the server moves notes outside both folders into `Home/` (keeping subfolders). A read or save at a note's old pre-`Home/` path is served from, and written to, its new place, and the response's `path` says where it now is. So an offline client that last saw `x.md` keeps working. Switch to the new path when you see it.
 - **Starting up:** for a few seconds after it starts (longer on the first sync), the server answers every `/api/` request with `503` and `Retry-After: 1` while it opens the notes folder. Retry.
 - **Outside folders (IDE mode, desktop only):** folders elsewhere on the computer, added by their absolute path. Their files are addressed as `@<id>/<path>` (`id` is 8 hex characters) and work with `GET`/`PUT /api/note` and `POST /api/files`/`/api/folders`. They are never committed or synced, can't be deleted through the API (`400`), and have no history or backlinks. They exist only when the server can't be reached from other machines (it listens on 127.0.0.1 with no Tailscale name). Otherwise every outside-folder request gets `403`, so a Pi never exposes its disk. KindleHub won't see them.
+- **Images in notes** are ordinary Markdown, `![](images/20261128-101500-a1b2c3.webp)`, relative to the note, with the files under `Home/images/` or `Work/images/`. They sync through git like notes. A client that can't show images can leave the line as text.
+- **Jama IDs** in notes are plain text (document keys like `PROJ-REQ-123`, Global IDs like `GID-4567`). The web UI links them to `<jamaUrl>/perspective.req#/search?term=<ID>` when `jamaUrl` is set.
 - **Trash:** deleting a note moves it to `.trash/` inside the notes folder, which syncs like everything else, so a client should treat a note that disappeared from `/api/notes` as deleted.
 
 ## Endpoints
 
 | Method and path | Body / query | Returns |
 | --- | --- | --- |
-| `GET /api/info` | | `{ machineName, repoPath, notesDir, remote, branch, version }` |
+| `GET /api/info` | | `{ machineName, repoPath, notesDir, remote, branch, version, local, jamaUrl }` (`jamaUrl` is the Jama address from Settings, `""` when not set) |
 | `GET /api/status` | | sync status (see below) |
 | `GET /api/notes[?mode=home\|work]` | | `NoteMeta[]`, newest first; optionally only one mode |
 | `GET /api/note?path=P` | | `{ path, text, hash }` (`path` is where the note is now; see Home and Work) |
@@ -45,6 +47,8 @@ Raspberry Pi (web UI + API) ──────git───┘
 | `GET /api/history/version?commit=C&file=F` | | `{ text }` of that version (`file` as returned by history) |
 | `GET /api/files[?mode=home\|work]` | | `NoteMeta[]` plus `size`, for notes and text/code files, sorted by path (IDE mode's file tree; a code file's `title` is its filename) |
 | `POST /api/files` | `{ path }` | `{ path, text: "", hash }`: a new empty file at that path; `409` if it exists, `400` if the type isn't allowed |
+| `POST /api/images?note=P` | raw image bytes, `Content-Type: image/webp\|png\|jpeg\|gif` | `{ path, markdown }`: saved as `<Home\|Work>/images/<date-time>-<random>.<ext>`. `markdown` is `![](…)` relative to note P. Images over 5 MB are refused (`413`). The web UI shrinks images (to 1600 px WebP) before sending |
+| `GET /api/file?path=P` | | the image's bytes with its type. Names never change, so it may be cached indefinitely |
 | `GET /api/folders[?mode=home\|work]` | | `["Work", "Work/sensor", …]`: folders, including empty ones |
 | `POST /api/folders` | `{ path }` | `{ path }`: a new folder; it gets a hidden `.gitkeep` so it syncs. `409` if it exists |
 | `GET /api/outside` | | `[{ id, name, path }]`: IDE mode's outside folders (see below) |
