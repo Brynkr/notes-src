@@ -26,6 +26,7 @@ import {
 } from "./config.ts";
 import { createApp, type SettingsHandlers } from "./http.ts";
 import { NotesRuntime } from "./runtime.ts";
+import { OutsideFolders } from "./folders.ts";
 import { isSea, seaAsset } from "./sea.ts";
 import {
   defaultRepoPath,
@@ -284,13 +285,27 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
   };
 
   // Lets `notes-app stop` (installers, uninstallers) stop us even with a password set.
+  // Written only once the port is ours (below), so a second copy can't replace it.
   const controlToken = randomBytes(24).toString("hex");
   const tokenFile = controlTokenFile(cfg.port);
-  fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
-  fs.writeFileSync(tokenFile, controlToken, { mode: 0o600 });
+  let starting = true;
+
+  // IDE mode's outside folders: only when nothing but this computer can reach the server.
+  const outside = new OutsideFolders({
+    machineName: cfg.machineName,
+    notesRoot: () => runtime?.notesRoot ?? null,
+    onEvent: (ev) => app.broadcast(ev),
+    onChange: (paths) => {
+      fileCfg = { ...fileCfg, outsideFolders: paths };
+      saveConfigFile(fileCfg);
+      cfg = { ...cfg, outsideFolders: paths };
+    },
+  });
 
   const app = createApp({
     controlToken,
+    starting: () => starting,
+    outside: () => (exposed() ? null : outside),
     runtime: () => runtime,
     info,
     settings,
@@ -304,12 +319,27 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
   });
 
   console.log(`notes-app ${VERSION}`);
+  // Claim the port before touching anything. If another copy of Notes is
+  // running, stop here having changed nothing: no sync, no moves, no token.
+  try {
+    await new Promise<void>((resolve, reject) => {
+      app.server.once("error", reject);
+      app.server.listen(cfg.port, cfg.host, resolve);
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+    const notes = await probe(cfg.port);
+    throw new Error(
+      `port ${cfg.port} is already in use${notes ? " by another copy of Notes" : ""}. Nothing was changed.\n` +
+        (notes ? `Open that one with "notes-app launch", or stop it first with "notes-app stop".` : `Close whatever is using it, or choose another port with --port.`),
+    );
+  }
+  fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+  fs.writeFileSync(tokenFile, controlToken, { mode: 0o600 });
   await startRuntime();
+  if (!exposed()) outside.open(Array.isArray(cfg.outsideFolders) ? cfg.outsideFolders.filter((p) => typeof p === "string") : []);
+  starting = false;
   if (!runtime && !setupError) console.log("  No notes folder yet: open the app to set one up.");
-  await new Promise<void>((resolve, reject) => {
-    app.server.once("error", reject);
-    app.server.listen(cfg.port, cfg.host, resolve);
-  });
   const shownHost = isLoopback(cfg.host) ? "localhost" : cfg.host === "0.0.0.0" ? "<this-machine's-address>" : cfg.host;
   const url = `http://${shownHost}:${cfg.port}/`;
   console.log(`  open:   ${url}${cfg.passwordHash ? "  (password required)" : ""}`);
@@ -324,6 +354,7 @@ async function serve(cli: Cli, initialFileCfg: Partial<Config>): Promise<void> {
     console.log(cfg.sync && runtime ? "Shutting down: final sync (up to 10 s)…" : "Shutting down.");
     app.server.close();
     app.closeClients();
+    outside.stopAll();
     await switching;
     await runtime?.stop(10_000);
     fs.rmSync(tokenFile, { force: true });
@@ -384,7 +415,8 @@ function probe(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get({ host: "127.0.0.1", port, path: "/api/info", headers: { Host: "localhost" }, timeout: 1500 }, (res) => {
       res.resume();
-      resolve(res.statusCode === 200 || res.statusCode === 401);
+      // 503 = a copy of Notes that holds the port and is still opening the notes folder.
+      resolve(res.statusCode === 200 || res.statusCode === 401 || res.statusCode === 503);
     });
     req.on("error", () => resolve(false));
     req.on("timeout", () => {

@@ -96,6 +96,8 @@ export interface NoteStoreOptions {
   worktreeLock: Queue;
   machineName: string;
   now?: () => Date;
+  /** Send reads/saves of a moved root note to Home/ (the notes folder only; not outside folders). */
+  followMoves?: boolean;
 }
 
 interface Known {
@@ -121,6 +123,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
   private readonly lock: Queue;
   private readonly machineName: string;
   private readonly now: () => Date;
+  private readonly followMoves: boolean;
   /** Last content we saw or wrote for each note. Used to ignore our own watcher events. */
   readonly known = new Map<string, Known>();
 
@@ -130,6 +133,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     this.lock = opts.worktreeLock;
     this.machineName = opts.machineName;
     this.now = opts.now ?? (() => new Date());
+    this.followMoves = opts.followMoves ?? true;
   }
 
   resolve(rel: string): string {
@@ -243,6 +247,38 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
     if (await exists(abs)) throw new Exists(`${rel} already exists`);
     const { hash } = await this.write(rel, "", null);
     return { path: rel, text: "", hash };
+  }
+
+  /** Every folder under the root (same skips as walk), including empty ones, sorted. */
+  async folders(): Promise<string[]> {
+    const out: string[] = [];
+    const visit = async (dirAbs: string, dirRel: string) => {
+      const entries = await fs.readdir(dirAbs, { withFileTypes: true }).catch(() => []);
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith(".") || SKIP_DIRS.has(e.name)) continue;
+        const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
+        out.push(rel);
+        await visit(path.join(dirAbs, e.name), rel);
+      }
+    };
+    await visit(this.root, "");
+    return out.sort();
+  }
+
+  /**
+   * New folder (IDE mode). Git doesn't track empty folders, so it gets a
+   * hidden `.gitkeep`: the folder then syncs to the other machines too.
+   */
+  async createFolder(rel: string): Promise<string> {
+    const clean = typeof rel === "string" ? rel.replace(/\/+$/, "") : "";
+    // Validate like a file path inside it (no "..", no hidden segments, stays under the root).
+    const abs = path.dirname(resolveNotePath(this.root, `${clean}/x.md`));
+    if (await exists(abs)) throw new Exists(`${clean} already exists`);
+    await this.lock.run(async () => {
+      await fs.mkdir(abs, { recursive: true });
+      await fs.writeFile(path.join(abs, ".gitkeep"), "");
+    });
+    return clean;
   }
 
   async read(rel: string): Promise<NoteContent> {
@@ -465,7 +501,7 @@ export class NoteStore extends EventEmitter<NoteStoreEvents> {
    * than recreating it at the root.
    */
   private async followMove(rel: string): Promise<string> {
-    if (modeFolderOf(rel) || !isNotePath(rel)) return rel;
+    if (!this.followMoves || modeFolderOf(rel) || !isNotePath(rel)) return rel;
     if (await exists(this.resolve(rel))) return rel;
     // Root notes only ever move into Home/ (or a "home" folder made by hand).
     for (const folder of [MODE_FOLDER.home, MODE_FOLDER.home.toLowerCase()]) {

@@ -7,6 +7,7 @@ import type {
   Backlink,
   NoteContent,
   NoteMeta,
+  OutsideFolder,
   RemoteTestResult,
   SaveRequest,
   SaveResponse,
@@ -78,6 +79,15 @@ export const api = {
   /** Notes and text/code files (IDE mode), sorted by path. */
   files: (mode: Mode) => call<(NoteMeta & { size: number })[]>("GET", `/api/files?mode=${mode}`),
   createFile: (path: string) => call<NoteContent>("POST", "/api/files", { path }),
+  /** Folders (including empty ones) of a mode. */
+  folders: (mode: Mode) => call<string[]>("GET", `/api/folders?mode=${mode}`),
+  createFolder: (path: string) => call<{ path: string }>("POST", "/api/folders", { path }),
+  /** IDE mode's outside folders (on this computer only; 403 over the network). */
+  outside: () => call<OutsideFolder[]>("GET", "/api/outside"),
+  addOutside: (path: string) => call<OutsideFolder>("POST", "/api/outside", { path }),
+  removeOutside: (id: string) => call<{ ok: true }>("DELETE", `/api/outside?id=${q(id)}`),
+  outsideFiles: (id: string) => call<(NoteMeta & { size: number })[]>("GET", `/api/outside/files?id=${q(id)}`),
+  outsideFolders: (id: string) => call<string[]>("GET", `/api/outside/folders?id=${q(id)}`),
   gitChanges: (mode: Mode) => call<ChangeEntry[]>("GET", `/api/git/changes?mode=${mode}`),
   gitCommits: (mode: Mode, limit = 50) => call<CommitEntry[]>("GET", `/api/git/commits?mode=${mode}&limit=${limit}`),
   /** A file's text at a commit ("HEAD" or a hash); 404 if it wasn't there. */

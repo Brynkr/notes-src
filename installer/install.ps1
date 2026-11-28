@@ -67,8 +67,18 @@ Say "git:     $((Get-Command git).Source)"
 
 # 2. Stop a running copy (it syncs first), then copy the app
 if (Test-Path (Join-Path $Dest 'server.js')) {
-  & $Node (Join-Path $Dest 'server.js') stop | Out-Null
-  Start-Sleep -Seconds 3
+  $old = Join-Path $Dest 'server.js'
+  & $Node $old stop | Out-Null
+  # Wait until it has really exited (final sync, up to ~10 s). If it won't stop,
+  # say so rather than install a version that isn't the one running.
+  $deadline = (Get-Date).AddSeconds(20)
+  do {
+    Start-Sleep -Milliseconds 500
+    & $Node $old running | Out-Null
+  } while ($LASTEXITCODE -eq 0 -and (Get-Date) -lt $deadline)
+  if ($LASTEXITCODE -eq 0) {
+    throw 'Notes is still running and did not stop when asked. Quit it (or sign out and back in), then run the installer again.'
+  }
 }
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Get-ChildItem $Dest -Exclude 'uninstall.ps1' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

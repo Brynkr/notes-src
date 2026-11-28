@@ -56,12 +56,8 @@ async function createNote(title: string, toSide = false): Promise<void> {
   }
 }
 
-/** IDE mode: make an empty file (path inside the current mode's folder) and open it. */
-async function createFile(rel: string): Promise<void> {
-  // Windows-style separators become "/"; leading slashes are dropped.
-  const clean = rel.split(String.fromCharCode(92)).join("/").replace(/^\/+/, "");
-  if (!clean) return;
-  const path = `${MODE_FOLDER[mode.value]}/${clean}`;
+/** IDE mode: make an empty file at a full path ("Work/x.py", "@ab12cd34/src/x.py") and open it. */
+async function createFile(path: string): Promise<void> {
   try {
     const file = await api.createFile(path);
     buffers.adopt(file.path, file.text, file.hash);
@@ -74,6 +70,27 @@ async function createFile(rel: string): Promise<void> {
       return;
     }
     toast(`Couldn't create the file: ${(err as Error).message}`, "error");
+  }
+}
+
+/** IDE mode: a new folder (it shows in the tree straight away, and syncs if it's in the notes folder). */
+async function createFolder(path: string): Promise<void> {
+  try {
+    await api.createFolder(path);
+    await refreshNotes();
+  } catch (err) {
+    toast(`Couldn't create the folder: ${(err as Error).message}`, "error");
+  }
+}
+
+/** IDE mode: show a folder from elsewhere on this computer in the tree. */
+async function addOutside(absPath: string): Promise<void> {
+  try {
+    const f = await api.addOutside(absPath);
+    toast(`Added ${f.name}. It's on this computer only: Notes doesn't sync it.`, "info");
+    await explorer.refreshOutside();
+  } catch (err) {
+    toast(`Couldn't add that folder: ${(err as Error).message}`, "error");
   }
 }
 
@@ -141,8 +158,10 @@ async function refreshNotes(): Promise<void> {
     try {
       notes = await api.list();
       if (ide.value) {
-        files = await api.files(mode.value);
-        explorer.setFiles(files);
+        const [f, folders] = await Promise.all([api.files(mode.value), api.folders(mode.value).catch(() => [] as string[])]);
+        files = f;
+        explorer.setFiles(files, folders);
+        void explorer.refreshOutside();
       }
       rebuildLinkKeys();
       sidebar.setNotes(modeNotes());
@@ -179,7 +198,18 @@ const explorer = new Explorer({
   mode: () => mode.value,
   open: (path, toSide) => openNote(path, toSide),
   showDiff: (req) => void diffDialog.show(req),
+  newIn: (kind, base) => {
+    setSidebarOpen(true);
+    sidebar.showNew(kind, base);
+  },
+  addOutside: () => {
+    setSidebarOpen(true);
+    sidebar.showNew("outside");
+  },
+  local: () => serverIsLocal,
 });
+/** From /api/info: only this computer can reach the server (outside folders allowed). */
+let serverIsLocal = false;
 
 const sidebar = new Sidebar({
   showTrash: () => void trashDialog.show(),
@@ -190,6 +220,8 @@ const sidebar = new Sidebar({
   mode: () => mode.value,
   setMode: (m) => mode.set(m),
   createFile,
+  createFolder,
+  addOutside,
   explorer: explorer.el,
 });
 mode.onChange(() => {
@@ -563,11 +595,20 @@ window.addEventListener("pagehide", () => buffers.saveOnUnload());
 async function boot(): Promise<void> {
   const placeholder = document.getElementById("app")!;
   let info;
-  try {
-    info = await api.info();
-  } catch {
-    placeholder.textContent = "Can't reach the notes server. If it's on this computer, start Notes again; otherwise check your connection.";
-    return;
+  // A server that has just started answers 503 until the notes folder is open (up to ~20 s on the first sync).
+  for (let waited = 0; ; waited += 500) {
+    try {
+      info = await api.info();
+      break;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 503 && waited < 30_000) {
+        placeholder.textContent = "Starting Notes…";
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+      placeholder.textContent = "Can't reach the notes server. If it's on this computer, start Notes again; otherwise check your connection.";
+      return;
+    }
   }
   if (!info.configured) {
     const ssh = await api.settings().then((s) => s.sshPublicKey, () => null);
@@ -578,6 +619,7 @@ async function boot(): Promise<void> {
   placeholder.replaceWith(root);
   connectEvents();
   statusbar.setMachine(info.machineName);
+  serverIsLocal = info.local === true;
   document.title = `Notes · ${info.machineName}`;
   narrowSidebarOpen = !workspace.active.notePath;
   applyIde();

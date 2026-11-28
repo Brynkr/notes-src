@@ -31,6 +31,8 @@ export interface Config {
   allowedHosts: string[];
   /** scrypt hash; when set, every request needs this password. */
   passwordHash?: string;
+  /** IDE mode: absolute paths of folders outside the notes repo shown in the file tree (this computer only). */
+  outsideFolders: string[];
 }
 
 export function configDir(): string {
@@ -64,6 +66,7 @@ export function defaults(): Config {
     syncIntervalSeconds: 180,
     sync: true,
     allowedHosts: [],
+    outsideFolders: [],
   };
 }
 

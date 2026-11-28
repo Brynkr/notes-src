@@ -25,6 +25,7 @@ import type {
   HistoryEntry,
   RemoteTestResult,
   SaveRequest,
+  SaveResponse,
   ServerEvent,
   SettingsDto,
   SettingsPatch,
@@ -34,6 +35,7 @@ import type {
 } from "../shared/types.ts";
 import { isLoopback, verifyPassword } from "./config.ts";
 import { BadPath, Changed, Exists, NotFound, TooLarge, type NoteStore } from "./notes.ts";
+import { FolderError, parseOutsidePath, type OutsideFolders } from "./folders.ts";
 import type { SearchIndex } from "./search.ts";
 import { SettingsError } from "./settings.ts";
 
@@ -63,6 +65,10 @@ export interface SettingsHandlers {
 export interface AppContext {
   /** The open notes folder, or null while setup is needed. */
   runtime(): RuntimeLike | null;
+  /** IDE mode's outside folders, or null when other machines can reach this server (then they're refused). */
+  outside?(): OutsideFolders | null;
+  /** True while the server holds its port but hasn't opened the notes folder yet: API calls get 503. */
+  starting?(): boolean;
   info(): AppInfo;
   settings?: SettingsHandlers;
   /** Address the server listens on. */
@@ -192,6 +198,19 @@ export function createApp(ctx: AppContext) {
     return ctx.settings;
   }
 
+  function outside(): OutsideFolders {
+    const o = ctx.outside?.();
+    if (!o) throw new HttpError(403, "Outside folders are only available in Notes on your own computer, not over the network.");
+    return o;
+  }
+
+  /** Where a request path lives: the notes folder, or an outside folder ("@<id>/<path>"). */
+  function target(p: string): { store: NoteStore; rel: string; prefix: string } {
+    const o = parseOutsidePath(p);
+    if (!o) return { store: rt().store, rel: p, prefix: "" };
+    return { store: outside().store(o.id), rel: o.rel, prefix: `@${o.id}/` };
+  }
+
   /** Optional ?mode=home|work filter. */
   function modeParam(url: URL): Mode | null {
     const m = url.searchParams.get("mode");
@@ -221,9 +240,54 @@ export function createApp(ctx: AppContext) {
         const all = await rt().store.files();
         return send(res, 200, mode ? all.filter((n) => inMode(n.path, mode)) : all);
       }
-      case "POST /api/files": {
-        const r = rt();
+      case "GET /api/folders": {
+        // Folders, including empty ones (IDE mode's tree shows them).
+        const mode = modeParam(url);
+        const all = await rt().store.folders();
+        return send(res, 200, mode ? all.filter((p) => inMode(`${p}/x`, mode)) : all);
+      }
+      case "POST /api/folders": {
         const body = await readJson<{ path?: string }>(req);
+        const t = target(String(body.path ?? ""));
+        if (t.prefix) {
+          const made = await t.store.createFolder(t.rel);
+          broadcast({ type: "notes-changed" });
+          return send(res, 201, { path: t.prefix + made });
+        }
+        const r = rt();
+        const folder = await r.store.createFolder(String(body.path ?? ""));
+        r.saved([]);
+        broadcast({ type: "notes-changed" });
+        return send(res, 201, { path: folder });
+      }
+      case "GET /api/outside":
+        return send(res, 200, outside().list());
+      case "POST /api/outside": {
+        const body = await readJson<{ path?: string }>(req);
+        return send(res, 201, outside().add(String(body.path ?? "")));
+      }
+      case "DELETE /api/outside": {
+        outside().remove(url.searchParams.get("id") ?? "");
+        return send(res, 200, { ok: true });
+      }
+      case "GET /api/outside/files": {
+        const id = url.searchParams.get("id") ?? "";
+        const files = await outside().store(id).files();
+        return send(res, 200, files.map((f) => ({ ...f, path: `@${id}/${f.path}` })));
+      }
+      case "GET /api/outside/folders": {
+        const id = url.searchParams.get("id") ?? "";
+        return send(res, 200, (await outside().store(id).folders()).map((p) => `@${id}/${p}`));
+      }
+      case "POST /api/files": {
+        const body = await readJson<{ path?: string }>(req);
+        const t = target(String(body.path ?? ""));
+        if (t.prefix) {
+          const made = await t.store.createFile(t.rel);
+          broadcast({ type: "notes-changed" });
+          return send(res, 201, { ...made, path: t.prefix + made.path });
+        }
+        const r = rt();
         const file = await r.store.createFile(String(body.path ?? ""));
         r.saved([file.path]);
         broadcast({ type: "notes-changed" });
@@ -254,13 +318,23 @@ export function createApp(ctx: AppContext) {
         return send(res, 200, { text });
       }
       case "GET /api/note": {
-        const p = url.searchParams.get("path") ?? "";
-        return send(res, 200, await rt().store.read(p));
+        const t = target(url.searchParams.get("path") ?? "");
+        const note = await t.store.read(t.rel);
+        return send(res, 200, { ...note, path: t.prefix + note.path });
       }
       case "PUT /api/note": {
-        const r = rt();
         const body = await readJson<SaveRequest>(req);
         if (typeof body.text !== "string") throw new HttpError(400, "text is required");
+        const t = target(String(body.path ?? ""));
+        if (t.prefix) {
+          // An outside folder: saved with the same conflict check, but never committed or synced.
+          const out = await t.store.write(t.rel, body.text, body.baseHash ?? null);
+          const result: SaveResponse = { hash: out.hash, ...(out.conflictCopy ? { conflictCopy: t.prefix + out.conflictCopy } : {}) };
+          broadcast({ type: "note-changed", path: body.path, hash: out.hash });
+          broadcast({ type: "notes-changed" });
+          return send(res, 200, result);
+        }
+        const r = rt();
         const result = await r.store.write(body.path, body.text, body.baseHash ?? null);
         const saved = result.path ?? body.path;
         r.saved(result.conflictCopy ? [saved, result.conflictCopy] : [saved]);
@@ -279,8 +353,9 @@ export function createApp(ctx: AppContext) {
       }
       case "DELETE /api/note": {
         // Moves the note to the Trash.
-        const r = rt();
         const p = url.searchParams.get("path") ?? "";
+        if (parseOutsidePath(p)) throw new HttpError(400, "Notes doesn't delete files in outside folders (there's no Trash there). Use your file manager.");
+        const r = rt();
         const trashPath = await r.store.trash(p, url.searchParams.get("hash") ?? undefined);
         r.search.remove(p);
         r.saved([]);
@@ -318,8 +393,9 @@ export function createApp(ctx: AppContext) {
         return send(res, 200, rt().search.search(q, mode ? (p) => inMode(p, mode) : undefined));
       }
       case "GET /api/backlinks": {
-        const r = rt();
         const p = url.searchParams.get("path") ?? "";
+        if (parseOutsidePath(p)) return send(res, 200, []); // outside folders: no links index
+        const r = rt();
         r.store.resolve(p); // validates
         const meta = r.store.known.get(p)?.meta;
         const hits = r.search
@@ -329,6 +405,7 @@ export function createApp(ctx: AppContext) {
         return send(res, 200, hits satisfies Backlink[]);
       }
       case "GET /api/history": {
+        if (parseOutsidePath(url.searchParams.get("path") ?? "")) return send(res, 200, []); // not in the notes repo
         const r = rt();
         if (!r.history) throw new HttpError(404, "Not found");
         return send(res, 200, await r.history(url.searchParams.get("path") ?? ""));
@@ -470,6 +547,12 @@ export function createApp(ctx: AppContext) {
         }
         failures.delete(key);
       }
+      if (url.pathname.startsWith("/api/") && ctx.starting?.()) {
+        // The port is ours but the notes folder isn't open yet (first sync can take a few seconds).
+        res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "1", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ error: "Notes is starting…" }));
+        return;
+      }
       if (url.pathname.startsWith("/api/")) await api(req, res, url);
       else serveStatic(req, res, url);
     } catch (err) {
@@ -478,7 +561,7 @@ export function createApp(ctx: AppContext) {
         return;
       }
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      if (err instanceof BadPath || err instanceof SettingsError) return send(res, 400, { error: err.message });
+      if (err instanceof BadPath || err instanceof SettingsError || err instanceof FolderError) return send(res, 400, { error: err.message });
       if (err instanceof NotFound) return send(res, 404, { error: err.message });
       if (err instanceof Changed || err instanceof Exists) return send(res, 409, { error: err.message });
       if (err instanceof TooLarge) return send(res, 413, { error: err.message });

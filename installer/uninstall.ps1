@@ -6,8 +6,15 @@ $Dest = Join-Path $env:LOCALAPPDATA 'Programs\notes-app'
 $node = Get-Command node -ErrorAction SilentlyContinue
 
 if ($node -and (Test-Path (Join-Path $Dest 'server.js'))) {
-  & $node.Source (Join-Path $Dest 'server.js') stop | Out-Null
-  Start-Sleep -Seconds 3
+  $old = Join-Path $Dest 'server.js'
+  & $node.Source $old stop | Out-Null
+  # Wait until it has really exited (it syncs first, up to ~10 s).
+  $deadline = (Get-Date).AddSeconds(20)
+  do {
+    Start-Sleep -Milliseconds 500
+    & $node.Source $old running | Out-Null
+  } while ($LASTEXITCODE -eq 0 -and (Get-Date) -lt $deadline)
+  if ($LASTEXITCODE -eq 0) { Write-Warning 'Notes is still running; it will stop when you sign out.' }
 }
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Programs')) 'Notes.lnk') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'Notes (background).lnk') -Force -ErrorAction SilentlyContinue

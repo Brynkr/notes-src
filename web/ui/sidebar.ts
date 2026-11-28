@@ -1,7 +1,7 @@
 // Left column: new note, search box, note list (or search results).
 
 import { MARK_END, MARK_START, type NoteMeta, type SearchHit } from "../../shared/types.ts";
-import { MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
+import { MODE_FOLDER, MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
 import { api } from "../api.ts";
 import { makeNoteDraggable } from "./dnd.ts";
 import { h, icons, modKey, relativeTime } from "./dom.ts";
@@ -12,7 +12,11 @@ export interface SidebarDeps {
   open: (path: string, toSide: boolean) => void;
   create: (title: string) => Promise<void>;
   /** IDE mode: a new (empty) file at a path inside the current mode's folder. */
-  createFile: (pathInMode: string) => Promise<void>;
+  createFile: (fullPath: string) => Promise<void>;
+  /** IDE mode: a new folder at a full path ("Work/sensor", "@ab12cd34/src"). */
+  createFolder: (fullPath: string) => Promise<void>;
+  /** IDE mode: show a folder from elsewhere on this computer in the tree. */
+  addOutside: (absPath: string) => Promise<void>;
   /** IDE mode's file tree and changes, shown instead of the search box and note list. */
   explorer: HTMLElement;
   collapse: () => void;
@@ -31,6 +35,9 @@ export class Sidebar {
   private readonly searchWrap: HTMLElement;
   private readonly footEl: HTMLElement;
   private ide = false;
+  /** What the "new" box makes, and where (a full folder path ending in "/"). */
+  private newKind: "note" | "file" | "folder" | "outside" = "note";
+  private newBase = "";
   private notes: NoteMeta[] = [];
   private hits: SearchHit[] | null = null;
   private activePath: string | null = null;
@@ -67,10 +74,15 @@ export class Sidebar {
         hidden: true,
         onsubmit: async (e: Event) => {
           e.preventDefault();
-          const title = this.newInput.value;
+          const value = this.newInput.value;
+          const name = value.trim().split(String.fromCharCode(92)).join("/").replace(/^\/+/, ""); // Windows "\" → "/", no leading "/"
+          const kind = this.newKind;
           this.hideNew();
-          if (this.ide) await this.deps.createFile(title.trim());
-          else await this.deps.create(title);
+          if (kind === "note") await this.deps.create(value);
+          else if (!name) return;
+          else if (kind === "file") await this.deps.createFile(this.newBase + name);
+          else if (kind === "folder") await this.deps.createFolder(this.newBase + name);
+          else await this.deps.addOutside(value.trim());
         },
       },
       this.newInput,
@@ -111,8 +123,7 @@ export class Sidebar {
     this.countEl.hidden = on;
     this.deps.explorer.hidden = !on;
     this.footEl.textContent = on ? `${modKey}+P go to file · Ctrl+click opens to the side` : `${modKey}+P go to note · ${modKey}+K search`;
-    this.newInput.placeholder = on ? "New file, e.g. scripts/hello.py" : "Title for the new note";
-    this.newInput.setAttribute("aria-label", on ? "New file path" : "New note title");
+
   }
 
   /** Show which mode is on; results from the other mode are re-queried. */
@@ -142,7 +153,23 @@ export class Sidebar {
     this.searchInput.select();
   }
 
-  showNew(): void {
+  /**
+   * Show the "new" box. In notes mode it makes a note; in IDE mode a file
+   * (default), a folder, or adds an outside folder. `base` is the folder it
+   * goes in (default: the current mode's folder).
+   */
+  showNew(kind: "file" | "folder" | "outside" | null = null, base: string | null = null): void {
+    this.newKind = kind ?? (this.ide ? "file" : "note");
+    this.newBase = base ?? `${MODE_FOLDER[this.deps.mode()]}/`;
+    const where = this.newBase.startsWith("@") ? this.newBase.slice(10) || "this folder" : this.newBase;
+    const text = {
+      note: ["Title for the new note", "New note title"],
+      file: [`New file in ${where}  e.g. hello.py`, "New file name"],
+      folder: [`New folder in ${where}`, "New folder name"],
+      outside: ["Full path of a folder, e.g. C:\code\project", "Outside folder path"],
+    }[this.newKind];
+    this.newInput.placeholder = text[0];
+    this.newInput.setAttribute("aria-label", text[1]);
     this.newForm.hidden = false;
     this.newInput.value = "";
     this.newInput.focus();

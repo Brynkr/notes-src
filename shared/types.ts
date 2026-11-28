@@ -34,6 +34,13 @@ export interface SaveResponse {
   path?: string;
 }
 
+/** An IDE-mode folder outside the notes repo; its files are addressed as "@<id>/<path>". */
+export interface OutsideFolder {
+  id: string;
+  name: string;
+  path: string;
+}
+
 /** A file changed in the working tree or in a commit (IDE mode's Changes panel). */
 export interface ChangeEntry {
   path: string;

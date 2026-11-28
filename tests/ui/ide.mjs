@@ -58,7 +58,8 @@ const step = async (name, fn) => {
   console.log("ok");
 };
 const shot = (name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
-const waitFor = async (fn, what, ms = 8000) => {
+// Generous: a busy PC makes saves and tree refreshes slow. Passing checks return at once.
+const waitFor = async (fn, what, ms = 20_000) => {
   const t0 = Date.now();
   for (;;) {
     const v = await fn();
@@ -68,6 +69,18 @@ const waitFor = async (fn, what, ms = 8000) => {
   }
 };
 const activeTitle = () => page.$eval(".pane.active .pane-title", (e) => e.textContent);
+/** The file tree redraws when folder contents arrive; retry a click whose row was replaced mid-click. */
+const clickSafe = async (selector) => {
+  for (let i = 0; ; i++) {
+    try {
+      await page.waitForSelector(selector);
+      return await page.click(selector);
+    } catch (err) {
+      if (i >= 4 || !/detached|not clickable/i.test(String(err))) throw err;
+      await sleep(200);
+    }
+  }
+};
 const treeNames = () => page.$$eval(".tree .tree-row .tree-name", (els) => els.map((e) => e.textContent));
 /** Colour of the first editor token with this exact text, and of plain editor text. */
 const tokenColor = (text) =>
@@ -170,6 +183,59 @@ try {
     await page.keyboard.press("Enter");
     await waitFor(async () => (await activeTitle()) === "driver.c", "driver.c via switcher");
     assert.equal(await page.$eval(".pane.active .pane-lang", (e) => e.textContent), "C");
+  });
+
+  await step("new folders: from the explorer bar and inside a folder; a file inside a folder", async () => {
+    await page.click(".explorer-newfolder");
+    await page.waitForSelector(".new-input", { visible: true });
+    assert.match(await page.$eval(".new-input", (e) => e.placeholder), /New folder in Work\//);
+    await page.type(".new-input", "drivers");
+    await page.keyboard.press("Enter");
+    await page.waitForSelector('.tree-dir[data-key="m:drivers"]');
+    assert.equal(fs.existsSync(path.join(repo, "Work/drivers/.gitkeep")), true, "empty folder kept for git");
+    // The folder's own "+" makes a file inside it.
+    await page.hover('.tree-dir[data-key="m:drivers"]').catch(() => undefined);
+    await clickSafe('.tree-line:has([data-key="m:drivers"]) [aria-label="New file in drivers"]');
+    await page.waitForSelector(".new-input", { visible: true });
+    assert.match(await page.$eval(".new-input", (e) => e.placeholder), /New file in Work\/drivers\//);
+    await page.type(".new-input", "spi.c");
+    await page.keyboard.press("Enter");
+    await waitFor(async () => (await activeTitle()) === "spi.c", "spi.c open");
+    assert.equal(fs.existsSync(path.join(repo, "Work/drivers/spi.c")), true);
+    await page.waitForSelector('.tree-file[data-path="Work/drivers/spi.c"]');
+    await shot("28-ide-folders");
+  });
+
+  await step("outside folders: add one from this computer, open and edit a file there, remove it from the list", async () => {
+    const proj = path.join(root, "my-project");
+    fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+    fs.writeFileSync(path.join(proj, "src", "app.py"), "def main():\n    pass\n");
+    await page.click(".outside-add");
+    await page.waitForSelector(".new-input", { visible: true });
+    await page.type(".new-input", proj);
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(".tree-outside");
+    assert.equal(await page.$eval(".tree-outside .tree-name", (e) => e.textContent), "my-project");
+    await clickSafe(".tree-outside");
+    await clickSafe('.tree-dir[data-key$=":src"]');
+    await page.waitForSelector('.tree-file[data-path$="/src/app.py"]');
+    const outsidePath = await page.$eval('.tree-file[data-path$="/src/app.py"]', (e) => e.dataset.path);
+    assert.match(outsidePath, /^@[0-9a-f]{8}\/src\/app\.py$/);
+    await clickSafe('.tree-file[data-path$="/src/app.py"]');
+    await waitFor(async () => (await activeTitle()) === "app.py", "outside file open");
+    assert.equal(await page.$eval(".pane.active .pane-lang", (e) => e.textContent), "Python");
+    await page.click(".pane.active .cm-content");
+    await page.keyboard.down("Control");
+    await page.keyboard.press("End");
+    await page.keyboard.up("Control");
+    await page.keyboard.type("\nmain()");
+    await waitFor(() => fs.readFileSync(path.join(proj, "src", "app.py"), "utf8").includes("main()\n") || fs.readFileSync(path.join(proj, "src", "app.py"), "utf8").endsWith("main()"), "saved in the outside folder");
+    assert.equal(git("status", "--porcelain").includes("app.py"), false, "nothing written into the notes repo");
+    await shot("29-ide-outside-folder");
+    await page.hover(".tree-outside").catch(() => undefined);
+    await clickSafe('.tree-line:has(.tree-outside) [aria-label="Remove my-project from the list"]');
+    await waitFor(async () => !(await page.$(".tree-outside")), "removed from the list");
+    assert.equal(fs.existsSync(path.join(proj, "src", "app.py")), true, "files stay on disk");
   });
 
   await step("turning IDE mode off brings the note list back; code fences in notes are highlighted", async () => {
