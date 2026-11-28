@@ -4,9 +4,12 @@
 // the page's own storage and are saved when the server is back.
 // Service workers only run on https:// (e.g. Tailscale) and localhost.
 
-const CACHE = "notes-app-v1";
-const SHELL = ["/", "/app.js", "/style.css", "/manifest.webmanifest", "/icon.svg", "/icon-maskable.svg"];
-const CACHED_API = ["/api/info", "/api/notes", "/api/note", "/api/status", "/api/backlinks"];
+// The build (scripts/build.mjs) fills these in: a cache name per build, and
+// every file of the app, including the parts loaded only on demand (IDE mode,
+// code languages), so they also work offline.
+const CACHE = "notes-app-__BUILD__";
+const SHELL = ["/", "/app.js", "/style.css", "/manifest.webmanifest", "/icon.svg", "/icon-maskable.svg" /* __CHUNKS__ */];
+const CACHED_API = ["/api/info", "/api/notes", "/api/note", "/api/status", "/api/backlinks", "/api/file"];
 const NETWORK_TIMEOUT_MS = 4000;
 
 self.addEventListener("install", (event) => {

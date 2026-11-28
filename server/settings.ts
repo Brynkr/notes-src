@@ -41,6 +41,24 @@ export function validateName(raw: unknown, what: string): string {
   return s;
 }
 
+/** "" (off) or an http(s) address without a trailing slash, e.g. https://acme.jamacloud.com */
+export function validateJamaUrl(raw: unknown): string {
+  const s = String(raw ?? "").trim().replace(/\/+$/, "");
+  if (!s) return "";
+  // Another scheme (ftp://, file://…): refuse rather than treat it as a host name.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) && !/^https?:\/\//i.test(s)) throw new SettingsError("Jama address: use an https:// (or http://) address");
+  let u: URL;
+  try {
+    u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+  } catch {
+    throw new SettingsError("Jama address: use your Jama Connect address, e.g. https://acme.jamacloud.com");
+  }
+  if (!/^https?:$/.test(u.protocol) || !u.hostname || u.search || u.hash || u.username) {
+    throw new SettingsError("Jama address: use just the site address, e.g. https://acme.jamacloud.com");
+  }
+  return (u.origin + u.pathname).replace(/\/+$/, "");
+}
+
 export function validateMachineName(raw: unknown): string {
   const s = String(raw ?? "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/.test(s)) throw new SettingsError("Machine name: up to 40 letters, numbers, spaces, '.', '_' or '-'.");

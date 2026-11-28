@@ -57,7 +57,8 @@ const step = async (name, fn) => {
 };
 const shot = (name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
 const editorText = (i = 0) => page.$$eval(".pane .cm-content", (els, i) => els[i]?.innerText ?? null, i);
-const waitFor = async (fn, what, ms = 6000) => {
+// Generous: most waits are on real git syncs, which are slow on a busy PC. Passing checks return at once.
+const waitFor = async (fn, what, ms = 20_000) => {
   const t0 = Date.now();
   for (;;) {
     const v = await fn();
@@ -92,7 +93,7 @@ try {
     await page.waitForSelector(".cm-content");
     assert.match(await editorText(), /This note came from the repo/);
     assert.deepEqual(files(), ["Home/20261120-090000-welcome.md"], "the root note was moved into Home/ at startup");
-    await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).startsWith("Synced"), "synced label");
+    await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).startsWith("Synced"), "synced label", 30_000); // real git; slow on a busy PC
   });
 
   let notePath;
@@ -167,7 +168,7 @@ try {
     git(other, "pull", "-q");
     // Commit our side first so both machines changed the same lines.
     await page.click(".sync .icon-btn");
-    await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).startsWith("Synced"), "synced");
+    await waitFor(async () => (await page.$eval(".sync-label", (e) => e.textContent)).startsWith("Synced"), "synced", 30_000);
     git(other, "pull", "-q");
     fs.writeFileSync(path.join(other, notePath), "# Shopping list\n\nOTHER MACHINE VERSION\n");
     git(other, "commit", "-qam", "auto: 2026 laptop");

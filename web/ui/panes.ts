@@ -12,6 +12,7 @@ import type { BufferStore, NoteBuffer } from "../state/buffers.ts";
 import type { PaneState, Workspace } from "../state/workspace.ts";
 import { h, icons, modKey } from "./dom.ts";
 import { dragKind, NOTE_DRAG, PANE_DRAG } from "./dnd.ts";
+import { insertImages } from "../editor/images.ts";
 
 /** The pane being dragged by its title bar, if any (dragover can't read the data). */
 let draggingPane: string | null = null;
@@ -43,6 +44,7 @@ class Pane {
   private readonly body: HTMLElement;
   private readonly deleteBtn: HTMLButtonElement;
   private readonly historyBtn: HTMLButtonElement;
+  private readonly imageBtn: HTMLButtonElement;
   private readonly backlinksEl: HTMLElement;
   private readonly conflictEl: HTMLElement;
   private backlinkSeq = 0;
@@ -66,6 +68,27 @@ class Pane {
       html: icons.history,
       onclick: () => this.openHistory(),
     });
+    // Notes only: pick an image to embed (pasting or dropping one works too).
+    const picker = h("input", {
+      type: "file",
+      accept: "image/*",
+      multiple: true,
+      hidden: true,
+      onchange: () => {
+        const files = [...(picker.files ?? [])];
+        picker.value = "";
+        if (files.length && this.editor) void insertImages(this.editor.view, files);
+      },
+    }) as HTMLInputElement;
+    this.imageBtn = h("button", {
+      class: "icon-btn pane-image",
+      title: "Insert image (or paste / drop one)",
+      "aria-label": "Insert image",
+      html: icons.image,
+      hidden: true,
+      onclick: () => picker.click(),
+    });
+    this.imageBtn.append(picker);
     this.deleteBtn = h("button", {
       class: "icon-btn pane-delete",
       title: "Move to Trash",
@@ -102,6 +125,7 @@ class Pane {
         this.dotEl,
         h("span", { class: "spacer" }),
         this.langEl,
+        this.imageBtn,
         this.historyBtn,
         this.deleteBtn,
         h("button", {
@@ -339,6 +363,7 @@ class Pane {
     this.titleEl.textContent = "No note";
     this.titleEl.removeAttribute("title");
     this.langEl.hidden = true;
+    this.imageBtn.hidden = true;
     this.dotEl.className = "dirty-dot";
     this.deleteBtn.hidden = true;
     this.historyBtn.hidden = true;
@@ -348,7 +373,7 @@ class Pane {
         { class: "pane-empty" },
         h("p", { class: "pane-empty-lead" }, "Pick a note from the list, or start a new one."),
         h("button", { class: "btn", onclick: () => this.deps.newNote() }, "New note"),
-        h("p", { class: "pane-empty-hint" }, `${modKey}+P go to note · Alt+N new note · ${modKey}+K search · ${modKey}+\\ split`),
+        h("p", { class: "pane-empty-hint" }, `${modKey}+P go to note · ${modKey}+N new note · ${modKey}+K search · ${modKey}+\\ split`),
       ),
     );
   }
@@ -362,9 +387,10 @@ class Pane {
       this.deleteBtn.hidden = false;
       this.historyBtn.hidden = false;
       const note = isNotePath(b.path);
-      this.titleEl.textContent = note ? extractTitle(b.doc.toString(), b.path) : baseName(b.path);
+      this.titleEl.textContent = note ? extractTitle(b.doc.sliceString(0, 4000), b.path) /* the title is near the top: don't copy the whole note per keystroke */ : baseName(b.path);
       this.titleEl.title = b.path;
       this.langEl.hidden = note;
+      this.imageBtn.hidden = !note;
       this.langEl.textContent = note ? "" : (languageName(b.path) ?? "");
       const state = b.lastError ? "error" : b.offline && b.dirty ? "offline" : b.saving ? "saving" : b.dirty ? "dirty" : "clean";
       this.dotEl.className = `dirty-dot ${state}`;

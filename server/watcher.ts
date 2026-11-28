@@ -49,9 +49,12 @@ export class NoteWatcher extends EventEmitter<WatcherEvents> {
         this.schedule();
       });
       this.fsWatcher.on("error", () => {
+        this.store.watched = false; // fall back to rescanning on list()
         this.fullRescan = true;
         this.schedule();
       });
+      // Live watching works: listing can trust what the store already knows.
+      this.store.watched = true;
     } catch {
       // Recursive watching unsupported here: rely on the periodic rescan.
     }
@@ -77,6 +80,7 @@ export class NoteWatcher extends EventEmitter<WatcherEvents> {
   }
 
   stop(): void {
+    this.store.watched = false;
     this.fsWatcher?.close();
     if (this.timer) clearTimeout(this.timer);
     if (this.interval) clearInterval(this.interval);

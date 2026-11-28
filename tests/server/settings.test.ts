@@ -125,3 +125,18 @@ describe("setupRepo", () => {
     assert.equal(await getRemoteUrl(root, "origin"), null);
   });
 });
+
+describe("Jama address", () => {
+  test("accepts a site address (adding https://), strips trailing slashes; refuses junk", async () => {
+    const { validateJamaUrl } = await import("../../server/settings.ts");
+    assert.equal(validateJamaUrl(""), "");
+    assert.equal(validateJamaUrl("  "), "");
+    assert.equal(validateJamaUrl("https://acme.jamacloud.com/"), "https://acme.jamacloud.com");
+    assert.equal(validateJamaUrl("acme.jamacloud.com"), "https://acme.jamacloud.com");
+    assert.equal(validateJamaUrl("https://jama.example.org/contour/"), "https://jama.example.org/contour");
+    assert.equal(validateJamaUrl("http://jama"), "http://jama", "intranet names are fine");
+    for (const bad of ["javascript:alert(1)", "ftp://x.y", "https://a.b/?q=1", "https://user@a.b", "not a url at all"]) {
+      assert.throws(() => validateJamaUrl(bad), /Jama address/, bad);
+    }
+  });
+});

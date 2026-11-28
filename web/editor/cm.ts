@@ -3,16 +3,19 @@
 // edit is replayed into the other views of the same buffer. One document,
 // many views, so two panes can never overwrite each other.
 
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { addCursorAbove, addCursorBelow, defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from "@codemirror/language";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { Annotation, Compartment, EditorSelection, EditorState, Facet, Prec, Transaction, type Extension, type Text } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, placeholder, dropCursor } from "@codemirror/view";
+import { crosshairCursor, drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, placeholder, dropCursor, rectangularSelection } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { BufferStore, BufferView, NoteBuffer } from "../state/buffers.ts";
 import { isNotePath } from "../../shared/files.ts";
-import { codeHighlight, fenceLanguage, languageForPath } from "./languages.ts";
+import { codeHighlight } from "./highlight.ts";
+import { fenceLanguage, loadLanguageForPath } from "./lazylang.ts";
+import { jamaAtCursor, jamaLinks, openJama } from "./jama.ts";
+import { noteImages } from "./images.ts";
 import { taskCheckboxes } from "./tasks.ts";
 import { linkAtCursor, wikiLinks, type LinkHost } from "./wikilinks.ts";
 
@@ -86,9 +89,30 @@ export interface EditorPrefs {
   lineNumbers: boolean;
   activeLine: boolean;
   spellcheck: boolean;
+  /** Show the minimap (IDE mode, when turned on). */
+  minimap: boolean;
 }
 
 const prefsSlot = new Compartment();
+/** A code file's language: empty at first, filled in once its parser has loaded. */
+const langSlot = new Compartment();
+/** The IDE minimap: empty unless shown (its code loads the first time). */
+const mapSlot = new Compartment();
+let minimapCode: Promise<Extension> | null = null;
+const loadMinimap = () => (minimapCode ??= import("./minimap.ts").then((m) => m.minimap));
+
+function setMinimap(view: EditorView, on: boolean): void {
+  if (!on) {
+    view.dispatch({ effects: mapSlot.reconfigure([]) });
+    return;
+  }
+  void loadMinimap().then(
+    (ext) => {
+      if (view.dom.isConnected) view.dispatch({ effects: mapSlot.reconfigure(ext) });
+    },
+    () => undefined, // offline before it was ever loaded: no minimap
+  );
+}
 
 function prefsExtension(p: EditorPrefs, code: boolean): Extension {
   const spell = p.spellcheck && !code;
@@ -102,6 +126,7 @@ function prefsExtension(p: EditorPrefs, code: boolean): Extension {
 /** Apply new editor options to an open editor (and re-measure after font changes). */
 export function applyEditorPrefs(view: EditorView, p: EditorPrefs): void {
   view.dispatch({ effects: prefsSlot.reconfigure(prefsExtension(p, view.state.facet(isCodeEditor))) });
+  setMinimap(view, p.minimap);
 }
 
 export interface PaneEditor extends BufferView {
@@ -128,7 +153,7 @@ export function createEditor(opts: {
   const code = !isNotePath(buffer.path);
   // Notes: Markdown (with highlighted code fences), wiki links, checkboxes. Code: its language.
   const kind: Extension = code
-    ? [isCodeEditor.of(true), languageForPath(buffer.path), syntaxHighlighting(codeHighlight), Prec.high(codeTheme)]
+    ? [isCodeEditor.of(true), langSlot.of([]), syntaxHighlighting(codeHighlight), Prec.high(codeTheme)]
     : [
         EditorView.lineWrapping,
         markdown({ base: markdownLanguage, codeLanguages: fenceLanguage }),
@@ -137,6 +162,7 @@ export function createEditor(opts: {
         placeholder("Start writing…"),
         wikiLinks(opts.links),
         taskCheckboxes(),
+        noteImages(buffer.path),
       ];
 
   let paneEditor!: PaneEditor;
@@ -148,8 +174,15 @@ export function createEditor(opts: {
       extensions: [
         history(),
         drawSelection(),
+        // Several cursors, Sublime-style: Ctrl/Cmd+Alt+Up/Down adds one above/below,
+        // Alt+drag selects a column; Esc goes back to one cursor.
+        EditorState.allowMultipleSelections.of(true),
+        rectangularSelection(),
+        crosshairCursor(),
         dropCursor(),
         prefsSlot.of(prefsExtension(opts.prefs, code)),
+        mapSlot.of([]),
+        jamaLinks,
         indentOnInput(),
         bracketMatching(),
         highlightSelectionMatches(),
@@ -157,9 +190,13 @@ export function createEditor(opts: {
         kind,
         keymap.of([
           ...(opts.extraKeys ?? []),
+          { key: "Mod-Alt-ArrowUp", run: addCursorAbove, preventDefault: true },
+          { key: "Mod-Alt-ArrowDown", run: addCursorBelow, preventDefault: true },
           {
             key: "Alt-Enter",
             run: (v) => {
+              const jama = jamaAtCursor(v);
+              if (jama) return openJama(jama);
               const target = linkAtCursor(v);
               if (!target) return false;
               opts.links.follow(target, false);
@@ -206,6 +243,7 @@ export function createEditor(opts: {
   });
 
   let reportTimer: ReturnType<typeof setTimeout> | null = null;
+  let destroyed = false;
   function report(): void {
     if (reportTimer) return;
     reportTimer = setTimeout(() => {
@@ -224,12 +262,23 @@ export function createEditor(opts: {
     },
     refresh: () => opts.onRefresh(),
     destroy() {
+      destroyed = true;
       if (reportTimer) clearTimeout(reportTimer);
       store.detach(buffer, paneEditor);
       view.destroy();
     },
   };
   store.attach(buffer, paneEditor);
+  if (opts.prefs.minimap) setMinimap(view, true);
+  if (code) {
+    // The editor is usable at once; highlighting appears when the parser arrives.
+    void loadLanguageForPath(buffer.path).then(
+      (lang) => {
+        if (!destroyed) view.dispatch({ effects: langSlot.reconfigure(lang) });
+      },
+      () => undefined, // offline and never loaded: plain text is fine
+    );
+  }
   return paneEditor;
 }
 

@@ -1,7 +1,7 @@
 // Left column: new note, search box, note list (or search results).
 
 import { MARK_END, MARK_START, type NoteMeta, type SearchHit } from "../../shared/types.ts";
-import { MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
+import { MODE_FOLDER, MODE_LABEL, MODES, pathInMode, type Mode } from "../../shared/modes.ts";
 import { api } from "../api.ts";
 import { makeNoteDraggable } from "./dnd.ts";
 import { h, icons, modKey, relativeTime } from "./dom.ts";
@@ -12,7 +12,11 @@ export interface SidebarDeps {
   open: (path: string, toSide: boolean) => void;
   create: (title: string) => Promise<void>;
   /** IDE mode: a new (empty) file at a path inside the current mode's folder. */
-  createFile: (pathInMode: string) => Promise<void>;
+  createFile: (fullPath: string) => Promise<void>;
+  /** IDE mode: a new folder at a full path ("Work/sensor", "@ab12cd34/src"). */
+  createFolder: (fullPath: string) => Promise<void>;
+  /** IDE mode: show a folder from elsewhere on this computer in the tree. */
+  addOutside: (absPath: string) => Promise<void>;
   /** IDE mode's file tree and changes, shown instead of the search box and note list. */
   explorer: HTMLElement;
   collapse: () => void;
@@ -31,12 +35,18 @@ export class Sidebar {
   private readonly searchWrap: HTMLElement;
   private readonly footEl: HTMLElement;
   private ide = false;
+  /** What the "new" box makes, and where (a full folder path ending in "/"). */
+  private newKind: "note" | "file" | "folder" | "outside" = "note";
+  private newBase = "";
+  private blurTimer: ReturnType<typeof setTimeout> | null = null;
   private notes: NoteMeta[] = [];
   private hits: SearchHit[] | null = null;
   private activePath: string | null = null;
   private cursor = -1;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private searchSeq = 0;
+  /** What the list last drew; refreshes that change nothing visible skip the rebuild. */
+  private drawn = "";
   private readonly deps: SidebarDeps;
 
   constructor(deps: SidebarDeps) {
@@ -58,7 +68,8 @@ export class Sidebar {
       onkeydown: (e: KeyboardEvent) => {
         if (e.key === "Escape") this.hideNew();
       },
-      onblur: () => setTimeout(() => this.hideNew(), 150),
+      // Hide when focus moves elsewhere (unless the box is reopened first: see showNew).
+      onblur: () => (this.blurTimer = setTimeout(() => this.hideNew(), 150)),
     });
     this.newForm = h(
       "form",
@@ -67,10 +78,15 @@ export class Sidebar {
         hidden: true,
         onsubmit: async (e: Event) => {
           e.preventDefault();
-          const title = this.newInput.value;
+          const value = this.newInput.value;
+          const name = value.trim().split(String.fromCharCode(92)).join("/").replace(/^\/+/, ""); // Windows "\" → "/", no leading "/"
+          const kind = this.newKind;
           this.hideNew();
-          if (this.ide) await this.deps.createFile(title.trim());
-          else await this.deps.create(title);
+          if (kind === "note") await this.deps.create(value);
+          else if (!name) return;
+          else if (kind === "file") await this.deps.createFile(this.newBase + name);
+          else if (kind === "folder") await this.deps.createFolder(this.newBase + name);
+          else await this.deps.addOutside(value.trim());
         },
       },
       this.newInput,
@@ -86,12 +102,13 @@ export class Sidebar {
       h(
         "div",
         { class: "sidebar-head" },
+        // Top-left: hide the note list (the same spot shows it again; see the top bar).
+        h("button", { class: "icon-btn sidebar-hide", title: "Hide the note list", "aria-label": "Hide the note list", html: icons.sidebar, onclick: () => this.deps.collapse() }),
         h("span", { class: "brand" }, "Notes"),
         this.countEl,
         h("button", { class: "icon-btn", title: "Today's note (Alt+D)", "aria-label": "Today's note", html: icons.today, onclick: () => this.deps.today() }),
         h("button", { class: "icon-btn", title: "Trash", "aria-label": "Trash", html: icons.trash, onclick: () => this.deps.showTrash() }),
-        h("button", { class: "icon-btn", title: `New note (Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
-        h("button", { class: "icon-btn hide-wide", title: "Hide sidebar", "aria-label": "Hide sidebar", html: icons.sidebar, onclick: () => this.deps.collapse() }),
+        h("button", { class: "icon-btn", title: `New note (${modKey}+N or Alt+N)`, "aria-label": "New note", html: icons.plus, onclick: () => this.showNew() }),
       ),
       h("div", { class: "segmented mode-switch", role: "group", "aria-label": "Mode" }, ...this.modeButtons),
       (this.searchWrap = h("div", { class: "search-wrap" }, h("span", { class: "search-icon", html: icons.search }), this.searchInput)),
@@ -111,8 +128,7 @@ export class Sidebar {
     this.countEl.hidden = on;
     this.deps.explorer.hidden = !on;
     this.footEl.textContent = on ? `${modKey}+P go to file · Ctrl+click opens to the side` : `${modKey}+P go to note · ${modKey}+K search`;
-    this.newInput.placeholder = on ? "New file, e.g. scripts/hello.py" : "Title for the new note";
-    this.newInput.setAttribute("aria-label", on ? "New file path" : "New note title");
+
   }
 
   /** Show which mode is on; results from the other mode are re-queried. */
@@ -142,7 +158,26 @@ export class Sidebar {
     this.searchInput.select();
   }
 
-  showNew(): void {
+  /**
+   * Show the "new" box. In notes mode it makes a note; in IDE mode a file
+   * (default), a folder, or adds an outside folder. `base` is the folder it
+   * goes in (default: the current mode's folder).
+   */
+  showNew(kind: "file" | "folder" | "outside" | null = null, base: string | null = null): void {
+    this.newKind = kind ?? (this.ide ? "file" : "note");
+    this.newBase = base ?? `${MODE_FOLDER[this.deps.mode()]}/`;
+    const where = this.newBase.startsWith("@") ? this.newBase.slice(10) || "this folder" : this.newBase;
+    const text = {
+      note: ["Title for the new note", "New note title"],
+      file: [`New file in ${where}  e.g. hello.py`, "New file name"],
+      folder: [`New folder in ${where}`, "New folder name"],
+      outside: ["Full path of a folder, e.g. C:\code\project", "Outside folder path"],
+    }[this.newKind];
+    this.newInput.placeholder = text[0];
+    this.newInput.setAttribute("aria-label", text[1]);
+    // A pending "hide on blur" from the last use must not close the box we're opening now.
+    if (this.blurTimer) clearTimeout(this.blurTimer);
+    this.blurTimer = null;
     this.newForm.hidden = false;
     this.newInput.value = "";
     this.newInput.focus();
@@ -217,6 +252,9 @@ export class Sidebar {
   }
 
   render(): void {
+    const drawn = JSON.stringify([this.hits, this.cursor, this.activePath, this.notes.map((n) => [n.path, n.title, n.conflict, Math.floor(n.modifiedMs / 60000)])]);
+    if (drawn === this.drawn && this.list.childElementCount) return;
+    this.drawn = drawn;
     this.list.replaceChildren();
     if (this.hits !== null) {
       if (!this.hits.length) {

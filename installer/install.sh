@@ -114,7 +114,14 @@ say "git:     $(command -v git)"
 
 if [ -f "$PREFIX/server.js" ]; then
   "$NODE" "$PREFIX/server.js" stop >/dev/null 2>&1 || true
-  sleep 3
+  # Wait until it has really exited (final sync, up to ~10 s); don't install over a copy that won't stop.
+  for _ in $(seq 1 40); do
+    "$NODE" "$PREFIX/server.js" running >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if "$NODE" "$PREFIX/server.js" running >/dev/null 2>&1; then
+    die "Notes is still running and did not stop when asked. Quit it (or log out and back in), then run the installer again."
+  fi
 fi
 mkdir -p "$PREFIX"
 rm -rf "${PREFIX:?}/web" "$PREFIX/server.js" "$PREFIX/server.js.map"

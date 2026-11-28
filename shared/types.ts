@@ -34,11 +34,31 @@ export interface SaveResponse {
   path?: string;
 }
 
+/** An IDE-mode folder outside the notes repo; its files are addressed as "@<id>/<path>". */
+export interface OutsideFolder {
+  id: string;
+  name: string;
+  path: string;
+}
+
 /** A file changed in the working tree or in a commit (IDE mode's Changes panel). */
 export interface ChangeEntry {
   path: string;
   /** A added, M modified, D deleted. */
   status: "A" | "M" | "D";
+}
+
+/** Git for an IDE outside folder that is a git repository (repo: false otherwise). Paths are "@<id>/…". */
+export interface ProjectGitStatus {
+  id: string;
+  repo: boolean;
+  branch: string | null;
+  /** e.g. "origin/main"; null when the branch tracks nothing. */
+  upstream: string | null;
+  /** Commits to push / to pull (as of the last fetch). */
+  ahead: number;
+  behind: number;
+  changes: ChangeEntry[];
 }
 
 export interface CommitEntry {
@@ -113,6 +133,8 @@ export interface AppInfo {
   platform: string;
   /** True when this server only listens on this computer (desktop use). */
   local: boolean;
+  /** Jama Connect address for linking Jama IDs; "" when not set. */
+  jamaUrl: string;
 }
 
 export interface SettingsDto {
@@ -137,10 +159,11 @@ export interface SettingsDto {
   fromCommandLine: string[];
   /** This machine's SSH public key, to add to GitHub as a deploy key. */
   sshPublicKey: string | null;
+  jamaUrl: string;
 }
 
 export type SettingsPatch = Partial<
-  Pick<SettingsDto, "repoPath" | "notesDir" | "remote" | "branch" | "machineName" | "sync" | "syncIdleSeconds" | "syncIntervalSeconds" | "remoteUrl" | "host" | "port" | "allowedHosts">
+  Pick<SettingsDto, "repoPath" | "notesDir" | "remote" | "branch" | "machineName" | "sync" | "syncIdleSeconds" | "syncIntervalSeconds" | "remoteUrl" | "host" | "port" | "allowedHosts" | "jamaUrl">
 >;
 
 export interface SettingsResult {

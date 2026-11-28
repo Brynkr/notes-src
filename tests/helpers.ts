@@ -59,7 +59,7 @@ export async function makeWorld(): Promise<World> {
       if (!fs.existsSync(dir)) sh(root, "clone", "-q", remote, dir);
       const git = new Git(dir, gitOpts);
       const lock = new Queue();
-      const engine = new SyncEngine({ git, remote: "origin", branch: "main", machineName: name, worktreeLock: lock, hooks, networkTimeoutMs: 15_000 });
+      const engine = new SyncEngine({ git, remote: "origin", branch: "main", machineName: name, worktreeLock: lock, hooks, networkTimeoutMs: 60_000 /* local temp repos; generous so a busy PC isn't mistaken for offline */ });
       return {
         name,
         dir,
